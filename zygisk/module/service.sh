@@ -10,5 +10,5 @@ echo "$(date) Audio Bridge service.sh started" >> $LOG
 # Ensure daemon is running
 if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid) 2>/dev/null; then
     echo "$(date) Starting audio bridge daemon" >> $LOG
-    /data/local/tmp/audio-bridge --daemon &
+    $MODDIR/system/bin/audio-bridge --daemon &
 fi
