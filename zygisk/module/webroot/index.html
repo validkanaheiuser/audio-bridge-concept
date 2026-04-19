@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Bridge Settings</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="mic-icon">🎤</div>
+            </div>
+            <h1>Audio Bridge</h1>
+            <p>KernelSU Module Configuration</p>
+        </header>
+
+        <section class="card status-card">
+            <div class="status-header">
+                <h2>Daemon Status</h2>
+                <div id="daemon-badge" class="badge unknown">Checking...</div>
+            </div>
+            <div class="status-details">
+                <p>PID: <span id="daemon-pid">--</span></p>
+            </div>
+        </section>
+
+        <section class="card config-card">
+            <h2>Server Connection</h2>
+            <div class="input-group">
+                <label for="host">IP Address / Host</label>
+                <input type="text" id="host" placeholder="192.168.1.100">
+            </div>
+            <div class="input-group">
+                <label for="port">Port</label>
+                <input type="number" id="port" placeholder="59100">
+            </div>
+            <div class="input-group">
+                <label for="token">Security Token</label>
+                <input type="password" id="token" placeholder="default_secure_token_123">
+            </div>
+            
+            <div class="actions">
+                <button id="btn-test" class="btn secondary">Test Connection</button>
+                <button id="btn-save" class="btn primary">Save & Restart</button>
+            </div>
+            <div id="test-result" class="test-result hidden"></div>
+        </section>
+
+        <section class="card debug-card">
+            <div class="debug-header">
+                <h2>Live Logs</h2>
+                <button id="btn-refresh-logs" class="btn-icon">🔄</button>
+            </div>
+            <div class="terminal">
+                <pre id="log-output">Loading logs...</pre>
+            </div>
+        </section>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

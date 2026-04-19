@@ -124,13 +124,13 @@ build_tinyalsa() {
     export AR="$TOOLCHAIN/bin/llvm-ar"
     
     make clean 2>/dev/null || true
-    make \
+    make -C src libtinyalsa.a \
         CC="$CC" \
         AR="$AR" \
         CFLAGS="-O3 -fPIC -DANDROID"
     
     mkdir -p "$LIBS_DIR/$ABI/include/tinyalsa"
-    cp libtinyalsa.a "$LIBS_DIR/$ABI/"
+    cp src/libtinyalsa.a "$LIBS_DIR/$ABI/libtinyalsa.a" || cp libtinyalsa.a "$LIBS_DIR/$ABI/libtinyalsa.a"
     cp include/tinyalsa/*.h "$LIBS_DIR/$ABI/include/tinyalsa/"
     
     echo -e "${GREEN}TinyALSA built for $ARCH${NC}"

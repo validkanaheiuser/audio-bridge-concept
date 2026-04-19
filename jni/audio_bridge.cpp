@@ -1117,12 +1117,15 @@ static void signal_handler(int sig) {
 // ──────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
+    bool check_server = false;
+    
     // Parse arguments
     for(int i = 1; i < argc; i++) {
         if(!strcmp(argv[i], "--host") && i+1 < argc) g_host = argv[++i];
         else if(!strcmp(argv[i], "--port") && i+1 < argc) g_port = atoi(argv[++i]);
         else if(!strcmp(argv[i], "--socket") && i+1 < argc) g_socket_path = argv[++i];
         else if(!strcmp(argv[i], "--token") && i+1 < argc) g_token = argv[++i];
+        else if(!strcmp(argv[i], "--check-server")) check_server = true;
         else if(!strcmp(argv[i], "--daemon")) {
             // Daemonize
             if(fork() > 0) exit(0);
@@ -1132,23 +1135,44 @@ int main(int argc, char** argv) {
         }
     }
     
-    // Load config from file if host not provided
-    if(!g_host) {
-        FILE* f = fopen("/data/local/tmp/audio_bridge.conf", "r");
-        static char hbuf[256];
-        if(f && fscanf(f, "%255s", hbuf) == 1) {
-            g_host = hbuf;
-            fclose(f);
+    // Load config from file if not provided via args
+    FILE* f = fopen("/data/local/tmp/audio_bridge.conf", "r");
+    if(f) {
+        char line[256];
+        while(fgets(line, sizeof(line), f)) {
+            char key[64], val[192];
+            if(sscanf(line, "%63[^=]=%191[^\n]", key, val) == 2) {
+                if(!g_host && !strcmp(key, "HOST")) g_host = strdup(val);
+                if(!strcmp(key, "PORT")) g_port = atoi(val);
+                if(!strcmp(key, "TOKEN")) g_token = strdup(val);
+            }
         }
+        fclose(f);
     }
     
     if(!g_host) {
         fprintf(stderr, 
-            "Usage: %s --host <VPS_IP> [--port N] [--socket PATH] [--token TOKEN] [--daemon]\n\n"
+            "Usage: %s --host <VPS_IP> [--port N] [--socket PATH] [--token TOKEN] [--daemon] [--check-server]\n\n"
             "Audio Bridge v%d.%d.%d - Full telephony & SMS control (TLS Secured)\n"
             "Server commands available via TLS control channel.\n",
             argv[0], VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
         return 1;
+    }
+    
+    if(check_server) {
+        LOGI("Checking TLS connection to %s:%d...", g_host, g_port);
+        if(!tls_connect(g_host, g_port)) {
+            LOGE("TLS Connection failed");
+            return 1;
+        }
+        if(!handshake(&g_ssl)) {
+            LOGE("Handshake/Auth failed");
+            tls_cleanup();
+            return 1;
+        }
+        LOGI("Connection and auth successful!");
+        tls_cleanup();
+        return 0; // Success
     }
     
     // Setup signal handlers
