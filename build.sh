@@ -102,6 +102,8 @@ build_opus() {
     make -j$(nproc)
     make install
     
+    mkdir -p "$LIBS_DIR/$ABI/include"
+    cp -r "$BUILD_DIR/opus-install-$ABI/include/opus" "$LIBS_DIR/$ABI/include/"
     cp "$BUILD_DIR/opus-install-$ABI/lib/libopus.a" "$LIBS_DIR/$ABI/"
     echo -e "${GREEN}Opus built for $ARCH${NC}"
 }
@@ -269,11 +271,30 @@ EOF
     mkdir -p app/src/main/jniLibs/armeabi-v7a
     cp "$BUILD_DIR/libaudiobridge-arm64-v8a.so" app/src/main/jniLibs/arm64-v8a/libaudiobridge.so 2>/dev/null || true
     
+    cat > app/settings.gradle << 'EOF'
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+rootProject.name = "AudioBridge"
+EOF
+
     # Build APK using gradle
     cat > app/build.gradle << 'EOF'
-plugins {
-    id 'com.android.application'
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.1.0'
+    }
 }
+
+apply plugin: 'com.android.application'
 
 android {
     namespace 'com.audiobridge'
@@ -297,6 +318,11 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+}
+
+repositories {
+    google()
+    mavenCentral()
 }
 EOF
 
