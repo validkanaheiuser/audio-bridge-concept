@@ -585,112 +585,24 @@ static bool setup_shared_memory() {
 // ──────────────────────────────────────────────────────────────────────────
 
 static void init_jni() {
-    JNI_GetCreatedJavaVMs(&g_jvm, 1, nullptr);
-    if(!g_jvm) {
-        LOGW("No Java VM found - call/SMS features disabled");
-        return;
-    }
-    
-    JNIEnv* env;
-    if(g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
-        LOGE("Failed to attach to JVM");
-        return;
-    }
-    
-    g_helper_class = env->FindClass("com/audiobridge/TelephonyHelper");
-    if(!g_helper_class) {
-        LOGW("TelephonyHelper class not found");
-        g_jvm->DetachCurrentThread();
-        return;
-    }
-    
-    jmethodID getInstance = env->GetStaticMethodID(g_helper_class, "getInstance", 
-                                                   "()Lcom/audiobridge/TelephonyHelper;");
-    if(getInstance) {
-        jobject obj = env->CallStaticObjectMethod(g_helper_class, getInstance);
-        if(obj) {
-            g_helper_obj = env->NewGlobalRef(obj);
-            LOGI("TelephonyHelper initialized");
-        }
-    }
-    
-    g_jvm->DetachCurrentThread();
+    LOGI("JNI bridge init skipped in daemon mode. IPC over UDS will be used.");
 }
 
 static void jni_place_call(const std::string& number) {
-    if(!g_helper_obj) return;
-    
-    JNIEnv* env;
-    if(g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-    
-    jclass cls = env->GetObjectClass(g_helper_obj);
-    jmethodID method = env->GetMethodID(cls, "placeCall", "(Ljava/lang/String;)V");
-    if(method) {
-        jstring jNumber = env->NewStringUTF(number.c_str());
-        env->CallVoidMethod(g_helper_obj, method, jNumber);
-        env->DeleteLocalRef(jNumber);
-    }
-    
-    g_jvm->DetachCurrentThread();
+    LOGW("jni_place_call IPC not implemented: %s", number.c_str());
 }
 
 static void jni_end_call() {
-    if(!g_helper_obj) return;
-    
-    JNIEnv* env;
-    if(g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-    
-    jclass cls = env->GetObjectClass(g_helper_obj);
-    jmethodID method = env->GetMethodID(cls, "endCall", "()V");
-    if(method) {
-        env->CallVoidMethod(g_helper_obj, method);
-    }
-    
-    g_jvm->DetachCurrentThread();
+    LOGW("jni_end_call IPC not implemented");
 }
 
 static void jni_answer_call() {
-    if(!g_helper_obj) return;
-    
-    JNIEnv* env;
-    if(g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-    
-    jclass cls = env->GetObjectClass(g_helper_obj);
-    jmethodID method = env->GetMethodID(cls, "answerCall", "()V");
-    if(method) {
-        env->CallVoidMethod(g_helper_obj, method);
-    }
-    
-    g_jvm->DetachCurrentThread();
+    LOGW("jni_answer_call IPC not implemented");
 }
 
 static std::string jni_send_sms(const std::string& number, const std::string& message) {
-    if(!g_helper_obj) return "";
-    
-    JNIEnv* env;
-    if(g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return "";
-    
-    jclass cls = env->GetObjectClass(g_helper_obj);
-    jmethodID method = env->GetMethodID(cls, "sendSMS", 
-                                        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    std::string result;
-    if(method) {
-        jstring jNumber = env->NewStringUTF(number.c_str());
-        jstring jMessage = env->NewStringUTF(message.c_str());
-        jstring jResult = (jstring)env->CallObjectMethod(g_helper_obj, method, jNumber, jMessage);
-        
-        if(jResult) {
-            const char* str = env->GetStringUTFChars(jResult, nullptr);
-            result = str;
-            env->ReleaseStringUTFChars(jResult, str);
-        }
-        
-        env->DeleteLocalRef(jNumber);
-        env->DeleteLocalRef(jMessage);
-    }
-    
-    g_jvm->DetachCurrentThread();
-    return result;
+    LOGW("jni_send_sms IPC not implemented: %s", number.c_str());
+    return "";
 }
 
 // ──────────────────────────────────────────────────────────────────────────
