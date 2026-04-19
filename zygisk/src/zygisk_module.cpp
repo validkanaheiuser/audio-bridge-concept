@@ -10,6 +10,7 @@
 #include <chrono>
 #include <string.h>
 #include <unistd.h>
+#include <thread>
 #include "zygisk.hpp"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AudioBridge-Zygisk", __VA_ARGS__)
