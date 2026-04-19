@@ -47,6 +47,13 @@
 #include <condition_variable>
 #include <sstream>
 #include <iomanip>
+#include <sys/syscall.h>
+
+#ifndef memfd_create
+static inline int memfd_create(const char *name, unsigned int flags) {
+    return syscall(__NR_memfd_create, name, flags);
+}
+#endif
 
 // ──────────────────────────────────────────────────────────────────────────
 // Configuration Constants
@@ -119,7 +126,7 @@ static std::string             g_current_number;
 static std::map<std::string, std::string> g_active_calls;
 
 static std::mutex              g_sms_mutex;
-static std::map<std::string, Json::Value> g_sms_tracking;
+static std::map<std::string, SimpleJson> g_sms_tracking;
 
 static std::mutex              g_log_mutex;
 static FILE*                   g_log_file = nullptr;
@@ -172,7 +179,9 @@ public:
     std::vector<SimpleJson> array_value;
     
     SimpleJson() : type(NULL_TYPE) {}
+    SimpleJson(Type t) : type(t) {}
     SimpleJson(const std::string& str) : type(STRING), string_value(str) {}
+    SimpleJson(const char* str) : type(STRING), string_value(str) {}
     SimpleJson(double num) : type(NUMBER), number_value(num) {}
     SimpleJson(bool b) : type(BOOLEAN), bool_value(b) {}
     
