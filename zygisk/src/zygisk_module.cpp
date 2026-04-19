@@ -13,6 +13,7 @@
 #include "zygisk.hpp"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AudioBridge-Zygisk", __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AudioBridge-Zygisk", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AudioBridge-Zygisk", __VA_ARGS__)
 
 static const char* SOCKET_PATH = "/data/local/tmp/audio_bridge.sock";

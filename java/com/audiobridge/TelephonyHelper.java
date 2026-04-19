@@ -18,8 +18,6 @@ import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.telephony.PreciseCallState;
-import androidx.core.app.ActivityCompat;
 import android.Manifest;
 import android.os.Bundle;
 
@@ -83,30 +81,13 @@ public class TelephonyHelper {
     }
 
     private void registerCallListener() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            mTelephonyManager.registerTelephonyCallback(
-                mContext.getMainExecutor(),
-                new TelephonyCallback() {
-                    @Override
-                    public void onCallStateChanged(int state) {
-                        handleCallStateChange(state, "");
-                    }
-
-                    @Override
-                    public void onPreciseCallStateChanged(PreciseCallState state) {
-                        handlePreciseCallState(state);
-                    }
-                }
-            );
-        } else {
-            PhoneStateListener listener = new PhoneStateListener() {
-                @Override
-                public void onCallStateChanged(int state, String incomingNumber) {
-                    handleCallStateChange(state, incomingNumber);
-                }
-            };
-            mTelephonyManager.listen(listener, PhoneStateListener.LISTEN_CALL_STATE);
-        }
+        PhoneStateListener listener = new PhoneStateListener() {
+            @Override
+            public void onCallStateChanged(int state, String incomingNumber) {
+                handleCallStateChange(state, incomingNumber);
+            }
+        };
+        mTelephonyManager.listen(listener, PhoneStateListener.LISTEN_CALL_STATE);
     }
 
     private void handleCallStateChange(int state, String number) {
@@ -122,13 +103,6 @@ public class TelephonyHelper {
 
             updateCallTracking(state, number);
             nativeOnCallStateChanged(state, number);
-        });
-    }
-
-    private void handlePreciseCallState(PreciseCallState state) {
-        mMainHandler.post(() -> {
-            android.util.Log.d(TAG, "Precise call state: fg=" + state.getForegroundCallState() +
-                               ", bg=" + state.getBackgroundCallState());
         });
     }
 
@@ -157,7 +131,7 @@ public class TelephonyHelper {
     // Public API - Call Control
 
     public void placeCall(String number) {
-        if (ActivityCompat.checkSelfPermission(mContext, Manifest.permission.CALL_PHONE)
+        if (mContext.checkSelfPermission(Manifest.permission.CALL_PHONE)
                 != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w(TAG, "CALL_PHONE permission not granted");
             return;
@@ -173,7 +147,7 @@ public class TelephonyHelper {
 
     public void endCall() {
         if (mTelecomManager != null) {
-            if (ActivityCompat.checkSelfPermission(mContext, Manifest.permission.ANSWER_PHONE_CALLS)
+            if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED) {
                 mTelecomManager.endCall();
                 android.util.Log.i(TAG, "Call ended");
@@ -183,7 +157,7 @@ public class TelephonyHelper {
 
     public void answerCall() {
         if (mTelecomManager != null) {
-            if (ActivityCompat.checkSelfPermission(mContext, Manifest.permission.ANSWER_PHONE_CALLS)
+            if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED) {
                 mTelecomManager.acceptRingingCall();
                 android.util.Log.i(TAG, "Call answered");
@@ -194,7 +168,7 @@ public class TelephonyHelper {
     // Public API - SMS
 
     public String sendSMS(String phoneNumber, String message) {
-        if (ActivityCompat.checkSelfPermission(mContext, Manifest.permission.SEND_SMS)
+        if (mContext.checkSelfPermission(Manifest.permission.SEND_SMS)
                 != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w(TAG, "SEND_SMS permission not granted");
             return null;
