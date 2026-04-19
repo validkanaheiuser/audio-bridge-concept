@@ -597,10 +597,22 @@ static bool handshake(mbedtls_ssl_context* ssl) {
 static bool setup_shared_memory() {
     g_shm_fd = memfd_create(g_shm_path, MFD_CLOEXEC);
     if(g_shm_fd < 0) {
+        LOGW("memfd_create failed (%s), trying ashmem...", strerror(errno));
         g_shm_fd = open("/dev/ashmem", O_RDWR);
         if(g_shm_fd < 0) {
-            LOGE("Failed to create shared memory: %s", strerror(errno));
-            return false;
+            LOGW("ashmem failed (%s), using anonymous mmap fallback", strerror(errno));
+            // Anonymous mmap fallback - no fd sharing but daemon still runs
+            g_shm_ptr = mmap(nullptr, SHM_SIZE, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+            if(g_shm_ptr == MAP_FAILED) {
+                LOGE("All shared memory methods failed: %s", strerror(errno));
+                return false;
+            }
+            g_shm_fd = -1; // No fd to share
+            auto* layout = (SharedMemoryLayout*)g_shm_ptr;
+            memset(layout, 0, SHM_SIZE);
+            LOGI("Shared memory initialized (anonymous mmap, no Zygisk sharing)");
+            return true;
         }
     }
     
@@ -1112,8 +1124,14 @@ int main(int argc, char** argv) {
             // Daemonize
             if(fork() > 0) exit(0);
             setsid();
-            fclose(stdin);
-            fclose(stdout);
+            // Redirect stdin/stdout to /dev/null (don't close - avoids fd reuse bugs)
+            int devnull = open("/dev/null", O_RDWR);
+            if(devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                // Keep stderr open for early crash diagnostics
+                close(devnull);
+            }
         }
     }
     

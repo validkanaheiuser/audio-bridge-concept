@@ -390,9 +390,22 @@ pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
 # Start daemon if not running
+# Use /system/bin/ path (mounted overlay) for correct SELinux context
 if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid 2>/dev/null) 2>/dev/null; then
     echo "$(date) Starting audio bridge daemon" >> $LOG
-    $MODDIR/system/bin/audio-bridge --daemon &
+    if [ -f /system/bin/audio-bridge ]; then
+        /system/bin/audio-bridge --daemon >> $LOG 2>&1 &
+    else
+        echo "$(date) /system/bin/audio-bridge not found, trying MODDIR" >> $LOG
+        chmod 755 $MODDIR/system/bin/audio-bridge 2>/dev/null
+        $MODDIR/system/bin/audio-bridge --daemon >> $LOG 2>&1 &
+    fi
+    sleep 1
+    if [ -f /data/local/tmp/audio_bridge.pid ]; then
+        echo "$(date) Daemon started, PID: $(cat /data/local/tmp/audio_bridge.pid)" >> $LOG
+    else
+        echo "$(date) WARNING: Daemon failed to start" >> $LOG
+    fi
 fi
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/service.sh"
