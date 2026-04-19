@@ -98,7 +98,7 @@ public class TelephonyHelper {
                     event.put("incoming_number", number);
                     event.put("current_number", currentNumber);
                     IPCClient.getInstance().sendEvent(event);
-                } catch (JSONException e) { e.printStackTrace(); }
+                } catch (JSONException je) { je.printStackTrace(); }
             }
 
             updateCallTracking(state, number);
@@ -108,7 +108,7 @@ public class TelephonyHelper {
                 event.put("state", state);
                 event.put("number", number != null ? number : "");
                 IPCClient.getInstance().sendEvent(event);
-            } catch (JSONException e) { e.printStackTrace(); }
+            } catch (JSONException je) { je.printStackTrace(); }
         });
     }
 
@@ -227,7 +227,7 @@ public class TelephonyHelper {
                 event.put("message_id", messageId);
                 event.put("result_code", 1);
                 IPCClient.getInstance().sendEvent(event);
-            } catch (JSONException e) { e.printStackTrace(); }
+            } catch (JSONException je) { je.printStackTrace(); }
             mPendingSMS.remove(messageId);
             return null;
         }
@@ -257,7 +257,7 @@ public class TelephonyHelper {
                                 event.put("message_id", id);
                                 event.put("result_code", -1);
                                 IPCClient.getInstance().sendEvent(event);
-                            } catch (JSONException e) { e.printStackTrace(); }
+                            } catch (JSONException je) { je.printStackTrace(); }
                         }
                     } else {
                         try {
@@ -266,7 +266,7 @@ public class TelephonyHelper {
                             event.put("message_id", id);
                             event.put("result_code", resultCode);
                             IPCClient.getInstance().sendEvent(event);
-                        } catch (JSONException e) { e.printStackTrace(); }
+                        } catch (JSONException je) { je.printStackTrace(); }
                         mPendingSMS.remove(id);
                     }
                 }
@@ -290,7 +290,7 @@ public class TelephonyHelper {
                             event.put("event", "sms_delivered");
                             event.put("message_id", id);
                             IPCClient.getInstance().sendEvent(event);
-                        } catch (JSONException e) { e.printStackTrace(); }
+                        } catch (JSONException je) { je.printStackTrace(); }
                         mPendingSMS.remove(id);
                     }
                 }
@@ -354,7 +354,7 @@ public class TelephonyHelper {
                                 event.put("message", message);
                                 event.put("timestamp", timestamp);
                                 IPCClient.getInstance().sendEvent(event);
-                            } catch (JSONException e) { e.printStackTrace(); }
+                            } catch (JSONException je) { je.printStackTrace(); }
                         }
                     }
                 }

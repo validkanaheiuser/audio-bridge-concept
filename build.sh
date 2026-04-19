@@ -188,6 +188,7 @@ build_apk() {
     # Copy Java source
     cp java/com/audiobridge/TelephonyHelper.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/AudioBridgeService.java app/src/main/java/com/audiobridge/
+    cp java/com/audiobridge/IPCClient.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/BootReceiver.java app/src/main/java/com/audiobridge/
     
     # Create AndroidManifest.xml
