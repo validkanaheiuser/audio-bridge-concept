@@ -272,6 +272,8 @@ static std::map<std::string, SimpleJson> g_sms_tracking;
 static std::mutex              g_log_mutex;
 static FILE*                   g_log_file = nullptr;
 
+static std::atomic<int>        g_java_fd{-1};
+
 // TLS State
 static mbedtls_net_context      g_net;
 static mbedtls_entropy_context  g_entropy;
@@ -396,6 +398,47 @@ static void write_pid_file() {
         fprintf(f, "%d\n", getpid());
         fclose(f);
     }
+}
+
+static void send_to_java(const SimpleJson& json) {
+    int fd = g_java_fd.load();
+    if (fd >= 0) {
+        std::string serialized = json.dump() + "\n";
+        send(fd, serialized.c_str(), serialized.length(), 0);
+    } else {
+        LOGW("Cannot send to Java: IPC disconnected");
+    }
+}
+
+static void jni_place_call(const std::string& number) {
+    SimpleJson json;
+    json.type = SimpleJson::OBJECT;
+    json.object_value["command"] = SimpleJson("place_call");
+    json.object_value["number"] = SimpleJson(number);
+    send_to_java(json);
+}
+
+static void jni_end_call() {
+    SimpleJson json;
+    json.type = SimpleJson::OBJECT;
+    json.object_value["command"] = SimpleJson("end_call");
+    send_to_java(json);
+}
+
+static void jni_answer_call() {
+    SimpleJson json;
+    json.type = SimpleJson::OBJECT;
+    json.object_value["command"] = SimpleJson("answer_call");
+    send_to_java(json);
+}
+
+static void jni_send_sms(const std::string& number, const std::string& message) {
+    SimpleJson json;
+    json.type = SimpleJson::OBJECT;
+    json.object_value["command"] = SimpleJson("send_sms");
+    json.object_value["number"] = SimpleJson(number);
+    json.object_value["message"] = SimpleJson(message);
+    send_to_java(json);
 }
 
 static void remove_pid_file() {
@@ -943,6 +986,32 @@ static void receive_virtual_mic_thread(mbedtls_ssl_context* ssl) {
     LOGI("Virtual mic receiver exited (frames: %llu)", (unsigned long long)frames_received);
 }
 
+static void read_java_client(int fd) {
+    LOGI("Java IPC Client connected (fd %d)", fd);
+    g_java_fd.store(fd);
+    
+    FILE* f = fdopen(fd, "r");
+    if (!f) {
+        close(fd);
+        return;
+    }
+    
+    char line[4096];
+    while(g_running && fgets(line, sizeof(line), f)) {
+        SimpleJson json = SimpleJson::parse(line);
+        if (json.type == SimpleJson::OBJECT) {
+            std::lock_guard<std::mutex> lock(g_status_mutex);
+            g_status_queue.push(json);
+        }
+    }
+    
+    LOGI("Java IPC Client disconnected");
+    if (g_java_fd.load() == fd) {
+        g_java_fd.store(-1);
+    }
+    fclose(f);
+}
+
 static void unix_socket_server_thread() {
     unlink(g_socket_path);
     
@@ -1012,12 +1081,20 @@ static void unix_socket_server_thread() {
                 sendmsg(client_fd, &msg, 0);
                 layout->module_active = true;
                 LOGI("Shared memory FD sent to Zygisk module");
+                close(client_fd);
             } else if(strcmp(cmd, "PING") == 0) {
                 send(client_fd, "PONG", 4, 0);
+                close(client_fd);
+            } else if(strncmp(cmd, "HELO_JAVA", 9) == 0) {
+                std::thread java_client_thread(read_java_client, client_fd);
+                java_client_thread.detach();
+                // Do NOT close client_fd here
+            } else {
+                close(client_fd);
             }
+        } else {
+            close(client_fd);
         }
-        
-        close(client_fd);
     }
     
     close(server_fd);
@@ -1120,8 +1197,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // Initialize JNI
-    init_jni();
+    // Init JNI stub removed
+    // start unix socket server instead
+
     
     // Start Unix socket server
     std::thread unix_thread(unix_socket_server_thread);

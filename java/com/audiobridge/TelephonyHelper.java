@@ -21,6 +21,9 @@ import android.telephony.TelephonyManager;
 import android.Manifest;
 import android.os.Bundle;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.UUID;
@@ -44,16 +47,7 @@ public class TelephonyHelper {
     private final Map<String, CallInfo> mActiveCalls = new ConcurrentHashMap<>();
     private String mCurrentActiveCall = null;
 
-    // Native methods
-    private native void nativeOnCallStateChanged(int state, String number);
-    private native void nativeOnCallWaiting(String incomingNumber, String currentNumber);
-    private native void nativeOnSMSSent(String messageId, int resultCode);
-    private native void nativeOnSMSDelivered(String messageId);
-    private native void nativeOnSMSReceived(String sender, String message, long timestamp);
-
-    static {
-        System.loadLibrary("audiobridge");
-    }
+    // Native methods removed in favor of IPCClient
 
     // Singleton
     public static synchronized TelephonyHelper getInstance(Context context) {
@@ -98,11 +92,23 @@ public class TelephonyHelper {
             if (isCallWaiting) {
                 String currentNumber = mCurrentActiveCall != null ?
                     mActiveCalls.get(mCurrentActiveCall).number : "";
-                nativeOnCallWaiting(number, currentNumber);
+                try {
+                    JSONObject event = new JSONObject();
+                    event.put("event", "call_waiting");
+                    event.put("incoming_number", number);
+                    event.put("current_number", currentNumber);
+                    IPCClient.getInstance().sendEvent(event);
+                } catch (JSONException e) { e.printStackTrace(); }
             }
 
             updateCallTracking(state, number);
-            nativeOnCallStateChanged(state, number);
+            try {
+                JSONObject event = new JSONObject();
+                event.put("event", "call_state_changed");
+                event.put("state", state);
+                event.put("number", number != null ? number : "");
+                IPCClient.getInstance().sendEvent(event);
+            } catch (JSONException e) { e.printStackTrace(); }
         });
     }
 
@@ -215,7 +221,13 @@ public class TelephonyHelper {
             android.util.Log.i(TAG, "SMS sent to " + phoneNumber + " (ID: " + messageId + ")");
         } catch (Exception e) {
             android.util.Log.e(TAG, "Failed to send SMS", e);
-            nativeOnSMSSent(messageId, 1);
+            try {
+                JSONObject event = new JSONObject();
+                event.put("event", "sms_sent");
+                event.put("message_id", messageId);
+                event.put("result_code", 1);
+                IPCClient.getInstance().sendEvent(event);
+            } catch (JSONException e) { e.printStackTrace(); }
             mPendingSMS.remove(messageId);
             return null;
         }
@@ -239,10 +251,22 @@ public class TelephonyHelper {
                     if (resultCode == Activity.RESULT_OK) {
                         info.sentParts++;
                         if (info.sentParts == info.totalParts) {
-                            nativeOnSMSSent(id, -1);
+                            try {
+                                JSONObject event = new JSONObject();
+                                event.put("event", "sms_sent");
+                                event.put("message_id", id);
+                                event.put("result_code", -1);
+                                IPCClient.getInstance().sendEvent(event);
+                            } catch (JSONException e) { e.printStackTrace(); }
                         }
                     } else {
-                        nativeOnSMSSent(id, resultCode);
+                        try {
+                            JSONObject event = new JSONObject();
+                            event.put("event", "sms_sent");
+                            event.put("message_id", id);
+                            event.put("result_code", resultCode);
+                            IPCClient.getInstance().sendEvent(event);
+                        } catch (JSONException e) { e.printStackTrace(); }
                         mPendingSMS.remove(id);
                     }
                 }
@@ -261,7 +285,12 @@ public class TelephonyHelper {
 
                 if (info != null) {
                     if (getResultCode() == Activity.RESULT_OK) {
-                        nativeOnSMSDelivered(id);
+                        try {
+                            JSONObject event = new JSONObject();
+                            event.put("event", "sms_delivered");
+                            event.put("message_id", id);
+                            IPCClient.getInstance().sendEvent(event);
+                        } catch (JSONException e) { e.printStackTrace(); }
                         mPendingSMS.remove(id);
                     }
                 }
@@ -318,7 +347,14 @@ public class TelephonyHelper {
                             String message = sms.getDisplayMessageBody();
                             long timestamp = sms.getTimestampMillis();
 
-                            nativeOnSMSReceived(sender, message, timestamp);
+                            try {
+                                JSONObject event = new JSONObject();
+                                event.put("event", "sms_received");
+                                event.put("sender", sender);
+                                event.put("message", message);
+                                event.put("timestamp", timestamp);
+                                IPCClient.getInstance().sendEvent(event);
+                            } catch (JSONException e) { e.printStackTrace(); }
                         }
                     }
                 }

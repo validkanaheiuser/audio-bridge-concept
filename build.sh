@@ -173,31 +173,6 @@ build_native() {
     echo -e "${GREEN}Native binary built: $BUILD_DIR/audio-bridge-$ABI${NC}"
 }
 
-# Build JNI library
-build_jni_lib() {
-    local ARCH=$1
-    local ABI=$2
-    local TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
-    
-    echo -e "${YELLOW}Building JNI library for $ARCH...${NC}"
-    
-    export CC="$TOOLCHAIN/bin/${ARCH}-linux-android${API_LEVEL}-clang"
-    export CXX="$TOOLCHAIN/bin/${ARCH}-linux-android${API_LEVEL}-clang++"
-    
-    cd "$PROJECT_DIR/jni"
-    
-    $CXX \
-        -std=c++17 \
-        -O3 \
-        -fPIC \
-        -shared \
-        -DANDROID \
-        jni_bridge.cpp \
-        -o "$BUILD_DIR/libaudiobridge-$ABI.so" \
-        -llog
-    
-    echo -e "${GREEN}JNI library built: $BUILD_DIR/libaudiobridge-$ABI.so${NC}"
-}
 
 # Build Java helper APK
 build_apk() {
@@ -440,10 +415,7 @@ main() {
     
     # Build native binary
     build_native "aarch64" "arm64-v8a"
-    
-    # Build JNI library
-    build_jni_lib "aarch64" "arm64-v8a"
-    
+
     # Prepare APK sources
     build_apk
     
@@ -462,10 +434,9 @@ main() {
     build_zygisk
     
     # Package APK and binary into module
-    if [ -f "$PROJECT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-        cp "$PROJECT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk" "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge/AudioBridge.apk"
-    elif [ -f "$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk" ]; then
-        cp "$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk" "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge/AudioBridge.apk"
+    APK_PATH=$(find "$PROJECT_DIR/app/build/outputs/apk/release" -name "*.apk" | head -n 1)
+    if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+        cp "$APK_PATH" "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge/AudioBridge.apk"
     else
         echo -e "${RED}Warning: APK not found! Module will not be fully functional until APK is placed in zygisk/module/system/priv-app/AudioBridge/${NC}"
     fi

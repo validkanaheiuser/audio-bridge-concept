@@ -33,6 +33,7 @@ public class AudioBridgeService extends Service {
             startForeground(NOTIFICATION_ID, buildNotification());
         }
         TelephonyHelper.getInstance(this);
+        IPCClient.getInstance(); // Start IPC connection to daemon
         android.util.Log.i(TAG, "AudioBridgeService created");
     }
 

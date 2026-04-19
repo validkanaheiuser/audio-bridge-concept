@@ -48,5 +48,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: audio-bridge-module
-        path: build/audio-bridge-module.zip
+        path: zygisk/module/
         if-no-files-found: error
