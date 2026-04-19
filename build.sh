@@ -125,7 +125,8 @@ build_tinyalsa() {
     
     make clean 2>/dev/null || true
     make \
-        CROSS_COMPILE="$TOOLCHAIN/bin/${ARCH}-linux-android-" \
+        CC="$CC" \
+        AR="$AR" \
         CFLAGS="-O3 -fPIC -DANDROID"
     
     mkdir -p "$LIBS_DIR/$ABI/include/tinyalsa"
