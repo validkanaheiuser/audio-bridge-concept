@@ -156,16 +156,14 @@ build_native() {
         -O3 \
         -fPIE \
         -DANDROID \
-        -D__ANDROID_API__=$API_LEVEL \
         -I"$LIBS_DIR/$ABI/include" \
-        -I"$LIBS_DIR/$ABI/include/tinyalsa" \
         -I"$PROJECT_DIR/jni" \
         audio_bridge.cpp \
         -o "$BUILD_DIR/audio-bridge-$ABI" \
         -L"$LIBS_DIR/$ABI" \
         -lopus \
         -ltinyalsa \
-        -lmbedtls -lmbedcrypto -lmbedx509 \
+        -lmbedtls -lmbedx509 -lmbedcrypto \
         -pthread \
         -pie \
         -Wl,--gc-sections \
@@ -194,7 +192,6 @@ build_jni_lib() {
         -fPIC \
         -shared \
         -DANDROID \
-        -D__ANDROID_API__=$API_LEVEL \
         jni_bridge.cpp \
         -o "$BUILD_DIR/libaudiobridge-$ABI.so" \
         -llog
@@ -355,7 +352,6 @@ build_zygisk() {
         -fPIC \
         -shared \
         -DANDROID \
-        -D__ANDROID_API__=$API_LEVEL \
         -I"$PROJECT_DIR/zygisk" \
         src/zygisk_module.cpp \
         -o "$PROJECT_DIR/zygisk/module/zygisk/arm64-v8a.so" \

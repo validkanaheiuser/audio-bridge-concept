@@ -4,6 +4,8 @@
  * License: MIT
  */
 
+#include <limits.h>
+#include <climits>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
