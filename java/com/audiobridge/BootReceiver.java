@@ -1,0 +1,24 @@
+package com.audiobridge;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+
+/**
+ * BootReceiver - Starts AudioBridgeService on device boot
+ */
+public class BootReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
+            Intent serviceIntent = new Intent(context, AudioBridgeService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+            android.util.Log.i("AudioBridge-Boot", "Service started on boot");
+        }
+    }
+}

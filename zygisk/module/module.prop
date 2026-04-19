@@ -1,0 +1,6 @@
+id=audio_bridge
+name=Audio Bridge
+version=v3.0
+versionCode=300
+author=AudioBridge
+description=Virtual microphone and speaker capture for remote audio

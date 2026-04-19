@@ -1,0 +1,47 @@
+name: Build Audio Bridge Module
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android NDK 25.2.9519653
+      run: |
+        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential zip unzip git curl gradle make
+
+    - name: Build Module
+      run: |
+        chmod +x build.sh
+        ./build.sh
+
+    - name: Upload Magisk/KernelSU Module
+      uses: actions/upload-artifact@v4
+      with:
+        name: audio-bridge-module
+        path: build/audio-bridge-module.zip
+        if-no-files-found: error
