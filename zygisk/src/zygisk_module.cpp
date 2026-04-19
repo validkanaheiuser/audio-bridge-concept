@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <dlfcn.h>
 #include <android/log.h>
 #include <chrono>
@@ -138,23 +139,62 @@ public:
         close(fd);
 
         if (g_active) {
-            // Hook AudioTrack::write
-            api->pltHookRegister("libaudioclient.so",
-                "_ZN7android10AudioTrack5writeEPKvj",
-                (void*)hooked_audio_track_write,
-                (void**)&original_audio_track_write);
+            dev_t dev = 0;
+            ino_t ino = 0;
+            get_lib_dev_ino("libaudioclient.so", &dev, &ino);
+            
+            if (dev != 0 && ino != 0) {
+                // Hook AudioTrack::write
+                api->pltHookRegister(dev, ino,
+                    "_ZN7android10AudioTrack5writeEPKvj",
+                    (void*)hooked_audio_track_write,
+                    (void**)&original_audio_track_write);
 
-            // Hook AudioRecord::read
-            api->pltHookRegister("libaudioclient.so",
-                "_ZN7android10AudioRecord4readEPvj",
-                (void*)hooked_audio_record_read,
-                (void**)&original_audio_record_read);
+                // Hook AudioRecord::read
+                api->pltHookRegister(dev, ino,
+                    "_ZN7android10AudioRecord4readEPvj",
+                    (void*)hooked_audio_record_read,
+                    (void**)&original_audio_record_read);
 
-            LOGI("Audio hooks installed");
+                LOGI("Audio hooks registered for libaudioclient.so (dev:%llu, ino:%llu)", 
+                     (unsigned long long)dev, (unsigned long long)ino);
+            } else {
+                LOGW("Could not find libaudioclient.so in memory map to hook");
+            }
         }
     }
 
 private:
+    void get_lib_dev_ino(const char* libname, dev_t* dev, ino_t* ino) {
+        *dev = 0;
+        *ino = 0;
+        FILE* fp = fopen("/proc/self/maps", "r");
+        if (!fp) return;
+        
+        char line[1024];
+        char path[512] = {0};
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, libname)) {
+                char* p = strchr(line, '/');
+                if (p) {
+                    char* end = strchr(p, '\n');
+                    if (end) *end = 0;
+                    strncpy(path, p, sizeof(path) - 1);
+                    break;
+                }
+            }
+        }
+        fclose(fp);
+        
+        if (path[0]) {
+            struct stat st;
+            if (stat(path, &st) == 0) {
+                *dev = st.st_dev;
+                *ino = st.st_ino;
+            }
+        }
+    }
+
     zygisk::Api* api = nullptr;
     JNIEnv* env = nullptr;
 };

@@ -32,7 +32,12 @@ jobs:
     - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential zip unzip git curl gradle make
+        sudo apt-get install -y build-essential zip unzip git curl make
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.1.1'
 
     - name: Build Module
       run: |
