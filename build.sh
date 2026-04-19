@@ -164,6 +164,7 @@ build_native() {
         -lopus \
         -ltinyalsa \
         -lmbedtls -lmbedx509 -lmbedcrypto \
+        -static-libstdc++ \
         -pthread \
         -pie \
         -Wl,--gc-sections \
