@@ -45,15 +45,18 @@ build_mbedtls() {
     cd "$BUILD_DIR"
     if [ ! -d "mbedtls" ]; then
         git clone --depth 1 -b v3.6.0 https://github.com/Mbed-TLS/mbedtls.git
+        cd mbedtls
+        git submodule update --init
+    else
+        cd mbedtls
     fi
-    cd mbedtls
     
     export CC="$TOOLCHAIN/bin/${ARCH}-linux-android${API_LEVEL}-clang"
     export AR="$TOOLCHAIN/bin/llvm-ar"
     
     # Simple makefile build for mbedtls
     make clean 2>/dev/null || true
-    make no_test CC="$CC" AR="$AR" CFLAGS="-O3 -fPIC" -j$(nproc)
+    make lib CC="$CC" AR="$AR" CFLAGS="-O3 -fPIC" -j$(nproc)
     
     mkdir -p "$LIBS_DIR/$ABI/include/mbedtls"
     mkdir -p "$LIBS_DIR/$ABI/include/psa"
