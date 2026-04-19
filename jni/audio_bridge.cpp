@@ -551,7 +551,6 @@ static bool tls_connect(const char* host, int port) {
     mbedtls_ssl_set_bio(&g_ssl, &g_net, mbedtls_net_send, mbedtls_net_recv, nullptr);
     
     LOGI("Performing TLS handshake...");
-    int ret;
     while((ret = mbedtls_ssl_handshake(&g_ssl)) != 0) {
         if(ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             LOGE("TLS handshake failed: -0x%04x", -ret);
