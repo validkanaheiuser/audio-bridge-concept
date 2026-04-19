@@ -264,6 +264,8 @@ public:
     bool hasKey(const std::string& key) const {
         return object_value.find(key) != object_value.end();
     }
+};
+
 static std::mutex              g_sms_mutex;
 static std::map<std::string, SimpleJson> g_sms_tracking;
 
