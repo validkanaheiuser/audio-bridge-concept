@@ -369,8 +369,6 @@ EOF
     cat > "$PROJECT_DIR/zygisk/module/customize.sh" << 'EOF'
 ui_print "- Installing Audio Bridge"
 ui_print "- Android 14 Compatible"
-set_perm_recursive $MODPATH/system/priv-app/AudioBridge 0 0 0755 0644
-set_perm $MODPATH/system/bin/audio-bridge 0 2000 0755
 EOF
 
     # Create service.sh (runs during late_start - safe, non-blocking)
