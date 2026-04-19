@@ -97,34 +97,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (res.errno === 0 && res.stdout.trim() !== '') {
             const pid = res.stdout.trim();
             console.log(`[DEBUG] PID file found with value: ${pid}`);
-
-            // Verify process is actually running via /proc (works without root)
-            const procCheck = await runCmd(`ls /proc/${pid}/cmdline`);
-            if (procCheck.errno === 0) {
-                console.log(`[DEBUG] Process ${pid} is running`);
-                daemonBadge.textContent = 'Running';
-                daemonBadge.className = 'badge running';
-                daemonPid.textContent = pid;
-                return;
-            } else {
-                console.warn(`[WARN] PID ${pid} found but process not running in /proc`);
-            }
-        } else {
-            console.log('[DEBUG] No valid PID file found');
-        }
-
-        // Fallback: check if socket exists (daemon is alive even if PID check fails)
-        console.log('[DEBUG] Checking for socket file');
-        const sockCheck = await runCmd('ls /data/local/tmp/audio_bridge.sock');
-        if (sockCheck.errno === 0) {
-            console.log('[DEBUG] Socket file found - daemon appears to be running');
+        // Verify process is actually running via pidof
+        const procCheck = await runCmd('pidof audio-bridge');
+        if (procCheck.errno === 0 && procCheck.stdout.trim() !== '') {
+            const runningPid = procCheck.stdout.trim().split(' ')[0];
+            console.log(`[DEBUG] Process ${runningPid} is running`);
             daemonBadge.textContent = 'Running';
             daemonBadge.className = 'badge running';
-            daemonPid.textContent = '?';
+            daemonPid.textContent = runningPid;
             return;
         }
 
-        console.log('[DEBUG] No running daemon detected');
+        console.log('[DEBUG] No running daemon detected via pidof');
         daemonBadge.textContent = 'Stopped';
         daemonBadge.className = 'badge stopped';
         daemonPid.textContent = '--';
@@ -132,8 +116,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Fetch Logs
     async function fetchLogs() {
-        console.log('[DEBUG] Fetching logs from /data/local/tmp/audio_bridge_service.log');
-        const res = await runCmd('tail -n 25 /data/local/tmp/audio_bridge_service.log');
+        console.log('[DEBUG] Fetching logs from /data/local/tmp/audio_bridge.log');
+        const res = await runCmd('tail -n 25 /data/local/tmp/audio_bridge.log');
 
         if (res.errno === 0) {
             const logContent = res.stdout || "No logs available yet.";
@@ -225,14 +209,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Restart Daemon
         console.log('[DEBUG] Attempting to kill existing daemon process');
-        const killResult = await runCmd('kill -9 $(cat /data/local/tmp/audio_bridge.pid)');
+        const killResult = await runCmd('killall audio-bridge || kill -9 $(cat /data/local/tmp/audio_bridge.pid 2>/dev/null)');
         console.log(`[DEBUG] Kill command result - errno: ${killResult.errno}`);
 
         console.log('[DEBUG] Removing PID file');
-        await runCmd('rm /data/local/tmp/audio_bridge.pid');
+        await runCmd('rm -f /data/local/tmp/audio_bridge.pid');
 
-        console.log('[DEBUG] Starting daemon');
-        const startResult = await runCmd('/system/bin/audio-bridge --daemon &');
+        console.log('[DEBUG] Starting daemon via service script');
+        // Run service.sh in background to handle SELinux context safely
+        const startResult = await runCmd('nohup sh /data/adb/modules/audio_bridge/service.sh >/dev/null 2>&1 &');
         console.log(`[DEBUG] Start daemon result - errno: ${startResult.errno}`);
 
         showResult('success', 'Configuration saved. Daemon restarted!');

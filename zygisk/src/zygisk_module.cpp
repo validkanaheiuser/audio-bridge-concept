@@ -96,9 +96,11 @@ public:
 
         struct sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+        addr.sun_path[0] = '\0';
+        strcpy(addr.sun_path + 1, "audio_bridge");
+        size_t addr_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen("audio_bridge");
 
-        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        if (connect(fd, (struct sockaddr*)&addr, addr_len) < 0) {
             close(fd);
             return;
         }

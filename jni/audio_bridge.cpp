@@ -510,6 +510,17 @@ static bool tcp_connect(const char* host, int port) {
         LOGE("TCP connection failed");
         return false;
     }
+    
+    // Enable TCP Keepalive so we detect dropped connections
+    int keepalive = 1;
+    int keepcnt = 3;
+    int keepidle = 5;
+    int keepintvl = 2;
+    setsockopt(g_net.fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+    setsockopt(g_net.fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+    setsockopt(g_net.fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(g_net.fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    
     LOGI("TCP connection established");
     return true;
 }
@@ -997,15 +1008,15 @@ static void unix_socket_server_thread() {
     
     struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, g_socket_path, sizeof(addr.sun_path) - 1);
+    addr.sun_path[0] = '\0';
+    strcpy(addr.sun_path + 1, "audio_bridge");
+    size_t addr_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen("audio_bridge");
     
-    if(bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if(bind(server_fd, (struct sockaddr*)&addr, addr_len) < 0) {
         LOGE("Unix socket bind failed: %s", strerror(errno));
         close(server_fd);
         return;
     }
-    
-    chmod(g_socket_path, 0666);
     
     if(listen(server_fd, 5) < 0) {
         LOGE("Unix socket listen failed: %s", strerror(errno));

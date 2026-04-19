@@ -399,6 +399,7 @@ function updateButtons() {
 
 function renderDevices(devices) {
     const container = document.getElementById('devices');
+    console.log(devices);
     if (!devices || Object.keys(devices).length === 0) {
         container.innerHTML = '<div class="no-devices">No devices connected. Configure the daemon on your phone.</div>';
         selectedDevice = null;
