@@ -125,44 +125,6 @@ static std::mutex              g_call_mutex;
 static std::string             g_current_number;
 static std::map<std::string, std::string> g_active_calls;
 
-static std::mutex              g_sms_mutex;
-static std::map<std::string, SimpleJson> g_sms_tracking;
-
-static std::mutex              g_log_mutex;
-static FILE*                   g_log_file = nullptr;
-
-// TLS State
-static mbedtls_net_context      g_net;
-static mbedtls_entropy_context  g_entropy;
-static mbedtls_ctr_drbg_context g_ctr_drbg;
-static mbedtls_ssl_context      g_ssl;
-static mbedtls_ssl_config       g_conf;
-static std::mutex               g_tls_write_mutex;
-
-// ──────────────────────────────────────────────────────────────────────────
-// Shared Memory Layout (Must match Zygisk module)
-// ──────────────────────────────────────────────────────────────────────────
-
-struct AudioFrame {
-    int16_t data[FRAME_SAMPLES];
-    uint64_t timestamp;
-    uint32_t flags;
-    uint32_t reserved;
-};
-
-struct SharedMemoryLayout {
-    std::atomic<uint32_t> write_index;
-    std::atomic<uint32_t> read_index;
-    std::atomic<uint32_t> speaker_write_idx;
-    std::atomic<uint32_t> speaker_read_idx;
-    std::atomic<bool> module_active;
-    std::atomic<bool> audio_capturing;
-    std::atomic<uint64_t> last_activity;
-    uint32_t padding[4];
-    AudioFrame mic_frames[SHM_RING_SIZE];
-    AudioFrame speaker_frames[SHM_RING_SIZE];
-};
-
 // ──────────────────────────────────────────────────────────────────────────
 // JSON Helper (Minimal implementation without external lib)
 // ──────────────────────────────────────────────────────────────────────────
@@ -302,6 +264,44 @@ public:
     bool hasKey(const std::string& key) const {
         return object_value.find(key) != object_value.end();
     }
+static std::mutex              g_sms_mutex;
+static std::map<std::string, SimpleJson> g_sms_tracking;
+
+static std::mutex              g_log_mutex;
+static FILE*                   g_log_file = nullptr;
+
+// TLS State
+static mbedtls_net_context      g_net;
+static mbedtls_entropy_context  g_entropy;
+static mbedtls_ctr_drbg_context g_ctr_drbg;
+static mbedtls_ssl_context      g_ssl;
+static mbedtls_ssl_config       g_conf;
+static std::mutex               g_tls_write_mutex;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Shared Memory Layout (Must match Zygisk module)
+// ──────────────────────────────────────────────────────────────────────────
+
+struct AudioFrame {
+    int16_t data[FRAME_SAMPLES];
+    uint64_t timestamp;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+struct SharedMemoryLayout {
+    std::atomic<uint32_t> write_index;
+    std::atomic<uint32_t> read_index;
+    std::atomic<uint32_t> speaker_write_idx;
+    std::atomic<uint32_t> speaker_read_idx;
+    std::atomic<bool> module_active;
+    std::atomic<bool> audio_capturing;
+    std::atomic<uint64_t> last_activity;
+    uint32_t padding[4];
+    AudioFrame mic_frames[SHM_RING_SIZE];
+    AudioFrame speaker_frames[SHM_RING_SIZE];
+};
+
 };
 
 // ──────────────────────────────────────────────────────────────────────────
