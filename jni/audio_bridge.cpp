@@ -532,14 +532,22 @@ static bool tls_connect(const char* host, int port) {
     if(mbedtls_ssl_config_defaults(&g_conf, MBEDTLS_SSL_IS_CLIENT, 
                                    MBEDTLS_SSL_TRANSPORT_STREAM, 
                                    MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+        LOGE("mbedtls_ssl_config_defaults failed");
         return false;
     }
     
     mbedtls_ssl_conf_authmode(&g_conf, MBEDTLS_SSL_VERIFY_NONE); // Disable cert verify for self-signed
     mbedtls_ssl_conf_rng(&g_conf, mbedtls_ctr_drbg_random, &g_ctr_drbg);
     
-    mbedtls_ssl_setup(&g_ssl, &g_conf);
-    mbedtls_ssl_set_hostname(&g_ssl, host);
+    int ret;
+    if((ret = mbedtls_ssl_setup(&g_ssl, &g_conf)) != 0) {
+        LOGE("mbedtls_ssl_setup failed: -0x%04x", -ret);
+        return false;
+    }
+    
+    // Skip SNI for direct IP connections, it causes mbedtls to fail
+    // mbedtls_ssl_set_hostname(&g_ssl, host);
+    
     mbedtls_ssl_set_bio(&g_ssl, &g_net, mbedtls_net_send, mbedtls_net_recv, nullptr);
     
     LOGI("Performing TLS handshake...");

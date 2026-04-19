@@ -208,15 +208,19 @@ def generate_self_signed_cert():
     import datetime
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Audio Bridge Server")])
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "audiobridge.local")])
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.utcnow())
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("audiobridge.local")]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False, key_encipherment=True, data_encipherment=False, key_agreement=True, key_cert_sign=True, crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .sign(key, hashes.SHA256())
     )
 
@@ -224,14 +228,28 @@ def generate_self_signed_cert():
         f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
     with open("server.crt", "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
-    logger.info("Generated self-signed certificate (server.crt / server.key)")
+    logger.info("Generated mbedtls-compatible self-signed certificate")
 
 async def start_tcp_server():
     # Setup TLS context for TCP server
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE  # Don't require client certs
+    ssl_context.verify_mode = ssl.CERT_NONE
+    # Force TLS 1.2 ONLY - mbedtls 3.6 doesn't support TLS 1.3
     ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
+    ssl_context.options |= ssl.OP_NO_TLSv1_3  # Belt and suspenders
+    ssl_context.options |= ssl.OP_NO_TLSv1_1
+    ssl_context.options |= ssl.OP_NO_TLSv1
+    ssl_context.options |= ssl.OP_NO_SSLv3
+    # Cipher suites compatible with mbedtls
+    ssl_context.set_ciphers(
+        'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:'
+        'AES256-GCM-SHA384:AES128-GCM-SHA256:'
+        'AES256-SHA256:AES128-SHA256:@SECLEVEL=1'
+    )
+    tls12_ciphers = [c for c in ssl_context.get_ciphers() if 'TLSv1.3' not in c.get('protocol', '')]
+    logger.info(f"TLS 1.2 ciphers available: {len(tls12_ciphers)} (e.g. {tls12_ciphers[0]['name'] if tls12_ciphers else 'NONE'})")
     
     if not os.path.exists("server.crt") or not os.path.exists("server.key"):
         logger.warning("No server.crt/server.key found. Generating self-signed cert... (FOR TESTING ONLY)")
@@ -239,13 +257,19 @@ async def start_tcp_server():
     
     ssl_context.load_cert_chain(certfile="server.crt", keyfile="server.key")
 
+    # Use a wrapper to catch TLS handshake failures
+    async def on_connection(reader, writer):
+        addr = writer.get_extra_info('peername')
+        logger.info(f"[TLS-OK] TLS handshake succeeded from {addr}")
+        await handle_device_client(reader, writer)
+
     server = await asyncio.start_server(
-        handle_device_client, 
+        on_connection, 
         '0.0.0.0', 
         59100, 
         ssl=ssl_context
     )
-    logger.info("TLS Audio Bridge Server listening on 0.0.0.0:59100")
+    logger.info("TLS Audio Bridge Server listening on 0.0.0.0:59100 (TLS 1.2 only)")
     async with server:
         await server.serve_forever()
 
