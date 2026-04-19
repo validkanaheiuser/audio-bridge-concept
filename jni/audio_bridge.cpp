@@ -457,6 +457,8 @@ static bool send_all(mbedtls_net_context* net, const void* data, size_t len) {
         int n = mbedtls_net_send(net, p, len);
         if(n <= 0) {
             if(n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            g_connected = false; // Mark connection as broken
+            g_status_cv.notify_all(); // Wake up any sleeping threads
             return false;
         }
         p += n;
@@ -471,6 +473,8 @@ static bool recv_all(mbedtls_net_context* net, void* data, size_t len) {
         int n = mbedtls_net_recv(net, p, len);
         if(n <= 0) {
             if(n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            g_connected = false; // Mark connection as broken
+            g_status_cv.notify_all(); // Wake up any sleeping threads
             return false;
         }
         p += n;
@@ -1132,11 +1136,17 @@ int main(int argc, char** argv) {
     if(f) {
         char line[256];
         while(fgets(line, sizeof(line), f)) {
-            char key[64], val[192];
-            if(sscanf(line, "%63[^=]=%191[^\n]", key, val) == 2) {
-                if(!g_host && !strcmp(key, "HOST")) g_host = strdup(val);
+            char key[64] = {0}, val[192] = {0};
+            if(sscanf(line, "%63[^=]=%191[^\n]", key, val) >= 1) {
+                // Strip trailing \r or spaces
+                char* p = val + strlen(val) - 1;
+                while(p >= val && (*p == '\r' || *p == '\n' || *p == ' ')) {
+                    *p = '\0';
+                    p--;
+                }
+                if(!g_host && !strcmp(key, "HOST") && strlen(val) > 0) g_host = strdup(val);
                 if(!strcmp(key, "PORT")) g_port = atoi(val);
-                if(!strcmp(key, "TOKEN")) g_token = strdup(val);
+                if(!g_token && !strcmp(key, "TOKEN")) g_token = strdup(val);
             }
         }
         fclose(f);
@@ -1199,8 +1209,13 @@ int main(int argc, char** argv) {
             if(cf) {
                 char line[256];
                 while(fgets(line, sizeof(line), cf)) {
-                    char key[64], val[192];
-                    if(sscanf(line, "%63[^=]=%191[^\n]", key, val) == 2) {
+                    char key[64] = {0}, val[192] = {0};
+                    if(sscanf(line, "%63[^=]=%191[^\n]", key, val) >= 1) {
+                        char* p = val + strlen(val) - 1;
+                        while(p >= val && (*p == '\r' || *p == '\n' || *p == ' ')) {
+                            *p = '\0';
+                            p--;
+                        }
                         if(!strcmp(key, "HOST") && strlen(val) > 0) g_host = strdup(val);
                         if(!strcmp(key, "PORT")) g_port = atoi(val);
                         if(!strcmp(key, "TOKEN")) g_token = strdup(val);

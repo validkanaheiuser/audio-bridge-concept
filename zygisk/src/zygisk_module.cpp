@@ -91,80 +91,82 @@ public:
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs* args) override {
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd < 0) return;
+        // ALWAYS register hooks, even if daemon isn't running yet!
+        dev_t dev = 0;
+        ino_t ino = 0;
+        get_lib_dev_ino("libaudioclient.so", &dev, &ino);
+        
+        if (dev != 0 && ino != 0) {
+            // Hook AudioTrack::write
+            api->pltHookRegister(dev, ino,
+                "_ZN7android10AudioTrack5writeEPKvj",
+                (void*)hooked_audio_track_write,
+                (void**)&original_audio_track_write);
 
-        struct sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        addr.sun_path[0] = '\0';
-        strcpy(addr.sun_path + 1, "audio_bridge");
-        size_t addr_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen("audio_bridge");
+            // Hook AudioRecord::read
+            api->pltHookRegister(dev, ino,
+                "_ZN7android10AudioRecord4readEPvj",
+                (void*)hooked_audio_record_read,
+                (void**)&original_audio_record_read);
 
-        if (connect(fd, (struct sockaddr*)&addr, addr_len) < 0) {
-            close(fd);
-            return;
+            LOGI("Audio hooks registered for libaudioclient.so (dev:%llu, ino:%llu)", 
+                 (unsigned long long)dev, (unsigned long long)ino);
+        } else {
+            LOGW("Could not find libaudioclient.so in memory map to hook");
         }
+    }
 
-        send(fd, "GET_SHM_FD", 10, 0);
+    void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
+        // Run connection loop in a background thread so we don't block app startup
+        std::thread([this]() {
+            while (!g_active) {
+                int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+                if (fd >= 0) {
+                    struct sockaddr_un addr{};
+                    addr.sun_family = AF_UNIX;
+                    addr.sun_path[0] = '\0';
+                    strcpy(addr.sun_path + 1, "audio_bridge");
+                    size_t addr_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen("audio_bridge");
 
-        struct msghdr msg = {};
-        char buf[CMSG_SPACE(sizeof(int))];
-        memset(buf, 0, sizeof(buf));
+                    if (connect(fd, (struct sockaddr*)&addr, addr_len) == 0) {
+                        send(fd, "GET_SHM_FD", 10, 0);
 
-        char iov_buf[2];
-        struct iovec io = { .iov_base = iov_buf, .iov_len = sizeof(iov_buf) };
-        msg.msg_iov = &io;
-        msg.msg_iovlen = 1;
-        msg.msg_control = buf;
-        msg.msg_controllen = sizeof(buf);
+                        struct msghdr msg = {};
+                        char buf[CMSG_SPACE(sizeof(int))];
+                        memset(buf, 0, sizeof(buf));
 
-        if (recvmsg(fd, &msg, 0) < 0) {
-            close(fd);
-            return;
-        }
+                        char iov_buf[2];
+                        struct iovec io = { .iov_base = iov_buf, .iov_len = sizeof(iov_buf) };
+                        msg.msg_iov = &io;
+                        msg.msg_iovlen = 1;
+                        msg.msg_control = buf;
+                        msg.msg_controllen = sizeof(buf);
 
-        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-        if (cmsg && cmsg->cmsg_type == SCM_RIGHTS) {
-            int shm_fd = *(int*)CMSG_DATA(cmsg);
+                        if (recvmsg(fd, &msg, 0) >= 0) {
+                            struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+                            if (cmsg && cmsg->cmsg_type == SCM_RIGHTS) {
+                                int shm_fd = *(int*)CMSG_DATA(cmsg);
 
-            g_shm = (SharedMemoryLayout*)mmap(nullptr, sizeof(SharedMemoryLayout),
-                                              PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-            if (g_shm != MAP_FAILED) {
-                g_shm->module_active = true;
-                g_active = true;
-                LOGI("Connected to audio bridge, SHM at %p", g_shm);
-                send(fd, "STATUS:ACTIVE", 13, 0);
+                                g_shm = (SharedMemoryLayout*)mmap(nullptr, sizeof(SharedMemoryLayout),
+                                                                  PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+                                if (g_shm != MAP_FAILED) {
+                                    g_shm->module_active = true;
+                                    g_active = true;
+                                    LOGI("Connected to audio bridge, SHM at %p", g_shm);
+                                    send(fd, "STATUS:ACTIVE", 13, 0);
+                                }
+                                close(shm_fd);
+                            }
+                        }
+                    }
+                    close(fd);
+                }
+                
+                if (!g_active) {
+                    usleep(1000000); // Wait 1 second before retrying
+                }
             }
-
-            close(shm_fd);
-        }
-
-        close(fd);
-
-        if (g_active) {
-            dev_t dev = 0;
-            ino_t ino = 0;
-            get_lib_dev_ino("libaudioclient.so", &dev, &ino);
-            
-            if (dev != 0 && ino != 0) {
-                // Hook AudioTrack::write
-                api->pltHookRegister(dev, ino,
-                    "_ZN7android10AudioTrack5writeEPKvj",
-                    (void*)hooked_audio_track_write,
-                    (void**)&original_audio_track_write);
-
-                // Hook AudioRecord::read
-                api->pltHookRegister(dev, ino,
-                    "_ZN7android10AudioRecord4readEPvj",
-                    (void*)hooked_audio_record_read,
-                    (void**)&original_audio_record_read);
-
-                LOGI("Audio hooks registered for libaudioclient.so (dev:%llu, ino:%llu)", 
-                     (unsigned long long)dev, (unsigned long long)ino);
-            } else {
-                LOGW("Could not find libaudioclient.so in memory map to hook");
-            }
-        }
+        }).detach();
     }
 
 private:

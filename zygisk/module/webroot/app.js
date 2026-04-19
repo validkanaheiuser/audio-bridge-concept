@@ -92,11 +92,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check Daemon Status
     async function checkStatus() {
         console.log('[DEBUG] Checking daemon status');
-        const res = await runCmd('cat /data/local/tmp/audio_bridge.pid');
-
-        if (res.errno === 0 && res.stdout.trim() !== '') {
-            const pid = res.stdout.trim();
-            console.log(`[DEBUG] PID file found with value: ${pid}`);
+        
         // Verify process is actually running via pidof
         const procCheck = await runCmd('pidof audio-bridge');
         if (procCheck.errno === 0 && procCheck.stdout.trim() !== '') {
