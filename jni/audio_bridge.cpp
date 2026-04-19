@@ -1129,9 +1129,10 @@ int main(int argc, char** argv) {
             if(devnull >= 0) {
                 dup2(devnull, STDIN_FILENO);
                 dup2(devnull, STDOUT_FILENO);
-                // Keep stderr open for early crash diagnostics
                 close(devnull);
             }
+            // Write PID file immediately so service.sh can detect us
+            write_pid_file();
         }
     }
     

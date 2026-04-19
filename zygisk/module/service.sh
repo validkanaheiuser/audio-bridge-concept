@@ -28,7 +28,7 @@ if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/
         chmod 755 $MODDIR/system/bin/audio-bridge 2>/dev/null
         $MODDIR/system/bin/audio-bridge --daemon >> $LOG 2>&1 &
     fi
-    sleep 1
+    sleep 3
     if [ -f /data/local/tmp/audio_bridge.pid ]; then
         echo "$(date) Daemon started, PID: $(cat /data/local/tmp/audio_bridge.pid)" >> $LOG
     else
