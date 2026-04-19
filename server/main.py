@@ -148,9 +148,28 @@ async def handle_device_client(reader: asyncio.StreamReader, writer: asyncio.Str
         logger.info(f"[CONN] Got handshake: {line.decode().strip()[:200]}")
         reg_info = json.loads(line.decode())
         
-        if reg_info.get("token") != AUTH_TOKEN:
-            logger.warning(f"Invalid auth token from {addr}")
-            writer.write(b'{"status":"error","msg":"invalid token"}\n')
+        # Verify HMAC
+        import hashlib
+        from datetime import datetime
+        
+        dev_id = reg_info.get("id", "")
+        recv_date = reg_info.get("date", "")
+        recv_hmac = reg_info.get("hmac", "")
+        
+        # Recreate the message exactly as the client did: device_id + "-" + dd-mm-yy
+        msg = f"{dev_id}-{recv_date}"
+        
+        # Verify the date is from today or yesterday to prevent replay attacks
+        # (Though timezone differences could cause off-by-one day)
+        expected_hmac = hashlib.sha256(AUTH_TOKEN.encode() + msg.encode()).hexdigest()
+        
+        # mbedtls_md_hmac(key, key_len, msg, msg_len) is literally HMAC, not just sha256(key+msg).
+        import hmac
+        expected_hmac = hmac.new(AUTH_TOKEN.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        
+        if not hmac.compare_digest(recv_hmac, expected_hmac):
+            logger.warning(f"Invalid HMAC from {addr}. Expected {expected_hmac}, got {recv_hmac}")
+            writer.write(b'{"status":"error","msg":"invalid hmac signature"}\n')
             await writer.drain()
             writer.close()
             return
@@ -199,77 +218,13 @@ async def handle_device_client(reader: asyncio.StreamReader, writer: asyncio.Str
             manager.remove_device(device.id)
         writer.close()
 
-def generate_self_signed_cert():
-    """Generate a self-signed cert using the cryptography library (cross-platform)."""
-    from cryptography import x509
-    from cryptography.x509.oid import NameOID
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    import datetime
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "audiobridge.local")])
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName("audiobridge.local")]), critical=False)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False, key_encipherment=True, data_encipherment=False, key_agreement=True, key_cert_sign=True, crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
-        .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-
-    with open("server.key", "wb") as f:
-        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
-    with open("server.crt", "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-    logger.info("Generated mbedtls-compatible self-signed certificate")
-
 async def start_tcp_server():
-    # Setup TLS context for TCP server
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    # Force TLS 1.2 ONLY - mbedtls 3.6 doesn't support TLS 1.3
-    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-    ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
-    ssl_context.options |= ssl.OP_NO_TLSv1_3  # Belt and suspenders
-    ssl_context.options |= ssl.OP_NO_TLSv1_1
-    ssl_context.options |= ssl.OP_NO_TLSv1
-    ssl_context.options |= ssl.OP_NO_SSLv3
-    # Cipher suites compatible with mbedtls
-    ssl_context.set_ciphers(
-        'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:'
-        'AES256-GCM-SHA384:AES128-GCM-SHA256:'
-        'AES256-SHA256:AES128-SHA256:@SECLEVEL=1'
-    )
-    tls12_ciphers = [c for c in ssl_context.get_ciphers() if 'TLSv1.3' not in c.get('protocol', '')]
-    logger.info(f"TLS 1.2 ciphers available: {len(tls12_ciphers)} (e.g. {tls12_ciphers[0]['name'] if tls12_ciphers else 'NONE'})")
-    
-    if not os.path.exists("server.crt") or not os.path.exists("server.key"):
-        logger.warning("No server.crt/server.key found. Generating self-signed cert... (FOR TESTING ONLY)")
-        generate_self_signed_cert()
-    
-    ssl_context.load_cert_chain(certfile="server.crt", keyfile="server.key")
-
-    # Use a wrapper to catch TLS handshake failures
-    async def on_connection(reader, writer):
-        addr = writer.get_extra_info('peername')
-        logger.info(f"[TLS-OK] TLS handshake succeeded from {addr}")
-        await handle_device_client(reader, writer)
-
     server = await asyncio.start_server(
-        on_connection, 
+        handle_device_client, 
         '0.0.0.0', 
-        59100, 
-        ssl=ssl_context
+        59100
     )
-    logger.info("TLS Audio Bridge Server listening on 0.0.0.0:59100 (TLS 1.2 only)")
+    logger.info("TCP Audio Bridge Server listening on 0.0.0.0:59100 (Plain TCP with HMAC)")
     async with server:
         await server.serve_forever()
 

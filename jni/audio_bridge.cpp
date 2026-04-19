@@ -447,19 +447,17 @@ static void remove_pid_file() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Network Utilities (TLS via mbedtls)
+// Network Utilities (TCP via mbedtls_net)
 // ──────────────────────────────────────────────────────────────────────────
 
-static bool send_all(mbedtls_ssl_context* ssl, const void* data, size_t len) {
+static bool send_all(mbedtls_net_context* net, const void* data, size_t len) {
     std::lock_guard<std::mutex> lk(g_tls_write_mutex);
     const auto* p = (const uint8_t*)data;
     while(len > 0) {
-        int n = mbedtls_ssl_write(ssl, p, len);
+        int n = mbedtls_net_send(net, p, len);
         if(n <= 0) {
-            if(n != MBEDTLS_ERR_SSL_WANT_READ && n != MBEDTLS_ERR_SSL_WANT_WRITE) {
-                return false;
-            }
-            continue;
+            if(n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            return false;
         }
         p += n;
         len -= n;
@@ -467,15 +465,13 @@ static bool send_all(mbedtls_ssl_context* ssl, const void* data, size_t len) {
     return true;
 }
 
-static bool recv_all(mbedtls_ssl_context* ssl, void* data, size_t len) {
+static bool recv_all(mbedtls_net_context* net, void* data, size_t len) {
     auto* p = (uint8_t*)data;
     while(len > 0) {
-        int n = mbedtls_ssl_read(ssl, p, len);
+        int n = mbedtls_net_recv(net, p, len);
         if(n <= 0) {
-            if(n != MBEDTLS_ERR_SSL_WANT_READ && n != MBEDTLS_ERR_SSL_WANT_WRITE) {
-                return false;
-            }
-            continue;
+            if(n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            return false;
         }
         p += n;
         len -= n;
@@ -483,93 +479,54 @@ static bool recv_all(mbedtls_ssl_context* ssl, void* data, size_t len) {
     return true;
 }
 
-static bool send_frame(mbedtls_ssl_context* ssl, uint8_t type, const void* data, uint32_t len) {
+static bool send_frame(mbedtls_net_context* net, uint8_t type, const void* data, uint32_t len) {
     uint8_t hdr[5];
     hdr[0] = type;
     hdr[1] = (len >> 24) & 0xFF;
     hdr[2] = (len >> 16) & 0xFF;
     hdr[3] = (len >>  8) & 0xFF;
     hdr[4] = (len >>  0) & 0xFF;
-    return send_all(ssl, hdr, 5) && send_all(ssl, data, len);
+    return send_all(net, hdr, 5) && send_all(net, data, len);
 }
 
-static bool send_json(mbedtls_ssl_context* ssl, uint8_t type, const SimpleJson& json) {
+static bool send_json(mbedtls_net_context* net, uint8_t type, const SimpleJson& json) {
     std::string str = json.toString();
-    return send_frame(ssl, type, str.c_str(), str.length());
+    return send_frame(net, type, str.c_str(), str.length());
 }
 
-static void tls_cleanup() {
+static void tcp_cleanup() {
     mbedtls_net_free(&g_net);
-    mbedtls_ssl_free(&g_ssl);
-    mbedtls_ssl_config_free(&g_conf);
-    mbedtls_ctr_drbg_free(&g_ctr_drbg);
-    mbedtls_entropy_free(&g_entropy);
 }
 
-static bool tls_connect(const char* host, int port) {
-    tls_cleanup();
-    
+static bool tcp_connect(const char* host, int port) {
+    tcp_cleanup();
     mbedtls_net_init(&g_net);
-    mbedtls_ssl_init(&g_ssl);
-    mbedtls_ssl_config_init(&g_conf);
-    mbedtls_ctr_drbg_init(&g_ctr_drbg);
-    mbedtls_entropy_init(&g_entropy);
-    
-    const char* pers = "audio_bridge_client";
-    if(mbedtls_ctr_drbg_seed(&g_ctr_drbg, mbedtls_entropy_func, &g_entropy, 
-                             (const unsigned char*)pers, strlen(pers)) != 0) {
-        LOGE("mbedtls_ctr_drbg_seed failed");
-        return false;
-    }
     
     char port_str[10];
     snprintf(port_str, sizeof(port_str), "%d", port);
     
+    LOGI("Connecting to %s:%s (TCP)...", host, port_str);
     if(mbedtls_net_connect(&g_net, host, port_str, MBEDTLS_NET_PROTO_TCP) != 0) {
+        LOGE("TCP connection failed");
         return false;
     }
-    
-    if(mbedtls_ssl_config_defaults(&g_conf, MBEDTLS_SSL_IS_CLIENT, 
-                                   MBEDTLS_SSL_TRANSPORT_STREAM, 
-                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
-        LOGE("mbedtls_ssl_config_defaults failed");
-        return false;
-    }
-    
-    mbedtls_ssl_conf_authmode(&g_conf, MBEDTLS_SSL_VERIFY_NONE); // Disable cert verify for self-signed
-    mbedtls_ssl_conf_rng(&g_conf, mbedtls_ctr_drbg_random, &g_ctr_drbg);
-    
-    int ret;
-    if((ret = mbedtls_ssl_setup(&g_ssl, &g_conf)) != 0) {
-        LOGE("mbedtls_ssl_setup failed: -0x%04x", -ret);
-        return false;
-    }
-    
-    // Skip SNI for direct IP connections, it causes mbedtls to fail
-    // mbedtls_ssl_set_hostname(&g_ssl, host);
-    
-    mbedtls_ssl_set_bio(&g_ssl, &g_net, mbedtls_net_send, mbedtls_net_recv, nullptr);
-    
-    LOGI("Performing TLS handshake...");
-    while((ret = mbedtls_ssl_handshake(&g_ssl)) != 0) {
-        if(ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            LOGE("TLS handshake failed: -0x%04x", -ret);
-            return false;
-        }
-    }
-    
-    LOGI("TLS connection established securely");
+    LOGI("TCP connection established");
     return true;
 }
 
-static bool handshake(mbedtls_ssl_context* ssl) {
+#include <ctime>
+#include "mbedtls/md.h"
+
+static bool handshake(mbedtls_net_context* net) {
     SimpleJson reg;
     reg.type = SimpleJson::OBJECT;
     reg.object_value["type"] = SimpleJson("register");
     reg.object_value["name"] = SimpleJson(get_prop("ro.product.model", "Android"));
     reg.object_value["brand"] = SimpleJson(get_prop("ro.product.brand", ""));
     reg.object_value["android"] = SimpleJson(get_prop("ro.build.version.release", ""));
-    reg.object_value["id"] = SimpleJson(get_device_id());
+    
+    std::string dev_id = get_device_id();
+    reg.object_value["id"] = SimpleJson(dev_id);
     reg.object_value["mode"] = SimpleJson("full_control");
     reg.object_value["version"] = SimpleJson(std::to_string(VERSION_MAJOR) + "." + 
                                             std::to_string(VERSION_MINOR) + "." + 
@@ -578,16 +535,32 @@ static bool handshake(mbedtls_ssl_context* ssl) {
     reg.object_value["features"].array_value.push_back(SimpleJson("audio"));
     reg.object_value["features"].array_value.push_back(SimpleJson("call_control"));
     reg.object_value["features"].array_value.push_back(SimpleJson("sms"));
-    reg.object_value["token"] = SimpleJson(g_token);
+    
+    // Generate HMAC
+    time_t t = time(nullptr);
+    struct tm* gm = gmtime(&t);
+    char date_str[16];
+    strftime(date_str, sizeof(date_str), "%d-%m-%y", gm); // Current dd-mm-yy UTC
+    reg.object_value["date"] = SimpleJson(date_str); // Send date so server uses exact matching string
+    
+    std::string msg = dev_id + "-" + date_str;
+    unsigned char hmac[32];
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    mbedtls_md_hmac(md_info, (const unsigned char*)g_token, g_token ? strlen(g_token) : 0, 
+                    (const unsigned char*)msg.c_str(), msg.length(), hmac);
+                    
+    char hex[65];
+    for(int i = 0; i < 32; i++) sprintf(hex + i*2, "%02x", hmac[i]);
+    reg.object_value["hmac"] = SimpleJson(hex);
     
     std::string str = reg.toString() + "\n";
     
-    if(!send_all(ssl, str.c_str(), str.size())) return false;
+    if(!send_all(net, str.c_str(), str.size())) return false;
     
     std::string line;
     char c;
     while(true) {
-        if(!recv_all(ssl, &c, 1)) return false;
+        if(!recv_all(net, &c, 1)) return false;
         if(c == '\n') break;
         line += c;
         if(line.size() > 512) return false;
@@ -806,7 +779,7 @@ Java_com_audiobridge_TelephonyHelper_nativeOnSMSReceived(
 // Thread Functions
 // ──────────────────────────────────────────────────────────────────────────
 
-static void status_sender_thread(mbedtls_ssl_context* ssl) {
+static void status_sender_thread(mbedtls_net_context* net) {
     LOGI("Status sender started");
     
     while(g_running && g_connected) {
@@ -829,7 +802,7 @@ static void status_sender_thread(mbedtls_ssl_context* ssl) {
         }
         
         if(has_status && g_connected) {
-            if(send_frame(ssl, T_CALL_STATUS, json_str.c_str(), json_str.length())) {
+            if(send_frame(net, T_CALL_STATUS, json_str.c_str(), json_str.length())) {
                 LOGD("Status sent: %s", json_str.substr(0, 100).c_str());
             } else {
                 LOGE("Failed to send status, re-queueing");
@@ -843,7 +816,7 @@ static void status_sender_thread(mbedtls_ssl_context* ssl) {
     LOGI("Status sender exited");
 }
 
-static void capture_speaker_thread(mbedtls_ssl_context* ssl) {
+static void capture_speaker_thread(mbedtls_net_context* net) {
     auto* layout = (SharedMemoryLayout*)g_shm_ptr;
     
     int err;
@@ -876,7 +849,7 @@ static void capture_speaker_thread(mbedtls_ssl_context* ssl) {
         opus_int32 len = opus_encode(enc, frame.data, FRAME_SAMPLES, 
                                      pkt.data(), MAX_PKT);
         if(len > 0) {
-            if(!send_frame(ssl, T_SPEAKER, pkt.data(), (uint32_t)len)) {
+            if(!send_frame(net, T_SPEAKER, pkt.data(), (uint32_t)len)) {
                 break;
             }
             frames_sent++;
@@ -894,7 +867,7 @@ static void capture_speaker_thread(mbedtls_ssl_context* ssl) {
     LOGI("Speaker capture exited (frames sent: %llu)", (unsigned long long)frames_sent);
 }
 
-static void receive_virtual_mic_thread(mbedtls_ssl_context* ssl) {
+static void receive_virtual_mic_thread(mbedtls_net_context* net) {
     auto* layout = (SharedMemoryLayout*)g_shm_ptr;
     
     int err;
@@ -909,14 +882,14 @@ static void receive_virtual_mic_thread(mbedtls_ssl_context* ssl) {
     uint64_t frames_received = 0;
     
     while(g_running && g_connected) {
-        if(!recv_all(ssl, hdr, 5)) break;
+        if(!recv_all(net, hdr, 5)) break;
         
         uint8_t type = hdr[0];
         uint32_t len = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                        ((uint32_t)hdr[3] <<  8) | ((uint32_t)hdr[4]);
         
         if(len == 0 || len > MAX_PKT) break;
-        if(!recv_all(ssl, pkt.data(), len)) break;
+        if(!recv_all(net, pkt.data(), len)) break;
         
         // Handle Control Messages
         if(type == T_CONTROL) {
@@ -949,7 +922,7 @@ static void receive_virtual_mic_thread(mbedtls_ssl_context* ssl) {
                 pong.type = SimpleJson::OBJECT;
                 pong.object_value["type"] = SimpleJson("pong");
                 pong.object_value["timestamp"] = SimpleJson((double)time(nullptr));
-                send_json(ssl, T_PONG, pong);
+                send_json(net, T_PONG, pong);
             }
             
             continue;
@@ -1163,18 +1136,18 @@ int main(int argc, char** argv) {
             LOGE("--check-server requires --host");
             return 1;
         }
-        LOGI("Checking TLS connection to %s:%d...", g_host, g_port);
-        if(!tls_connect(g_host, g_port)) {
-            LOGE("TLS Connection failed");
+        LOGI("Checking TCP connection to %s:%d...", g_host, g_port);
+        if(!tcp_connect(g_host, g_port)) {
+            LOGE("TCP Connection failed");
             return 1;
         }
-        if(!handshake(&g_ssl)) {
+        if(!handshake(&g_net)) {
             LOGE("Handshake/Auth failed");
-            tls_cleanup();
+            tcp_cleanup();
             return 1;
         }
         LOGI("Connection and auth successful!");
-        tls_cleanup();
+        tcp_cleanup();
         return 0; // Success
     }
     
