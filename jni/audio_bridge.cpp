@@ -1205,17 +1205,17 @@ int main(int argc, char** argv) {
         }
         
         g_connected = false;
-        LOGI("Connecting to %s:%d (TLS)...", g_host, g_port);
+        LOGI("Connecting to %s:%d (TCP)...", g_host, g_port);
         
-        if(!tls_connect(g_host, g_port)) {
-            LOGW("TLS Connection failed, retrying in 15s");
+        if(!tcp_connect(g_host, g_port)) {
+            LOGW("TCP Connection failed, retrying in 15s");
             sleep(15);
             continue;
         }
         
-        if(!handshake(&g_ssl)) {
+        if(!handshake(&g_net)) {
             LOGW("Handshake/Auth failed, retrying in 15s");
-            tls_cleanup();
+            tcp_cleanup();
             sleep(15);
             continue;
         }
@@ -1238,15 +1238,15 @@ int main(int argc, char** argv) {
         }
         
         // Start worker threads
-        std::thread status_thread(status_sender_thread, &g_ssl);
-        std::thread speaker_thread(capture_speaker_thread, &g_ssl);
-        std::thread mic_thread(receive_virtual_mic_thread, &g_ssl);
+        std::thread status_thread(status_sender_thread, &g_net);
+        std::thread speaker_thread(capture_speaker_thread, &g_net);
+        std::thread mic_thread(receive_virtual_mic_thread, &g_net);
         
         status_thread.join();
         speaker_thread.join();
         mic_thread.join();
         
-        tls_cleanup();
+        tcp_cleanup();
         g_connected = false;
         LOGI("Disconnected, reconnecting in 15s");
         sleep(15);
