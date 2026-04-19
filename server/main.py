@@ -400,24 +400,27 @@ function updateButtons() {
 function renderDevices(devices) {
     const container = document.getElementById('devices');
     console.log(devices);
-    if (!devices || Object.keys(devices).length === 0) {
+    if (!devices || devices.length === 0) {
         container.innerHTML = '<div class="no-devices">No devices connected. Configure the daemon on your phone.</div>';
         selectedDevice = null;
         updateButtons();
         return;
     }
     container.innerHTML = '';
-    for (const [id, d] of Object.entries(devices)) {
+    let foundSelected = false;
+    for (const d of devices) {
+        const id = d.id;
+        if (selectedDevice === id) foundSelected = true;
         const item = document.createElement('div');
         item.className = 'device-item' + (selectedDevice === id ? ' selected' : '');
         item.innerHTML = '<div class="device-name">' + (d.name || id) + '</div>'
             + '<div class="device-meta">ID: ' + id + '</div>'
-            + '<div class="device-state">Call: ' + (d.call_state || 'IDLE') + (d.active_number ? ' (' + d.active_number + ')' : '') + '</div>';
+            + '<div class="device-state">Call: ' + (d.state || 'IDLE') + (d.number ? ' (' + d.number + ')' : '') + '</div>';
         item.onclick = () => { selectedDevice = id; renderDevices(devices); updateButtons(); };
         container.appendChild(item);
     }
-    if (!selectedDevice && Object.keys(devices).length > 0) {
-        selectedDevice = Object.keys(devices)[0];
+    if (!foundSelected && devices.length > 0) {
+        selectedDevice = devices[0].id;
         renderDevices(devices);
     }
     updateButtons();
@@ -439,7 +442,7 @@ function connect() {
     };
     ws.onmessage = (e) => {
         const data = JSON.parse(e.data);
-        if (data.type === 'state') {
+        if (data.type === 'state_update' || data.type === 'state') {
             renderDevices(data.devices);
         } else if (data.event) {
             addLog('Event: ' + JSON.stringify(data), 'event');

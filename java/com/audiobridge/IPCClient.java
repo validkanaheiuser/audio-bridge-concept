@@ -19,7 +19,7 @@ import java.util.concurrent.Executors;
 
 public class IPCClient {
     private static final String TAG = "AudioBridge-IPC";
-    private static final String SOCKET_NAME = "/data/local/tmp/audio_bridge.sock";
+    private static final String SOCKET_NAME = "audio_bridge";
 
     private static IPCClient sInstance;
     
@@ -60,7 +60,7 @@ public class IPCClient {
         Log.i(TAG, "Attempting to connect to daemon UDS...");
         
         mSocket = new LocalSocket();
-        mSocket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.FILESYSTEM));
+        mSocket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
         
         mOut = new PrintWriter(new OutputStreamWriter(mSocket.getOutputStream()), true);
         mIn = new BufferedReader(new InputStreamReader(mSocket.getInputStream()));

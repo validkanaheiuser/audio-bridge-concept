@@ -371,6 +371,12 @@ ui_print "- Installing Audio Bridge"
 ui_print "- Android 14 Compatible"
 EOF
 
+    # Create sepolicy.rule to allow com.android.phone (radio) to connect to daemon's unix socket
+    cat > "$PROJECT_DIR/zygisk/module/sepolicy.rule" << 'EOF'
+allow radio su unix_stream_socket connectto
+allow radio magisk unix_stream_socket connectto
+EOF
+
     # Create service.sh (runs during late_start - safe, non-blocking)
     cat > "$PROJECT_DIR/zygisk/module/service.sh" << 'EOF'
 #!/system/bin/sh
