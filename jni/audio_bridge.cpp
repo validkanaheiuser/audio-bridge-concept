@@ -403,7 +403,7 @@ static void write_pid_file() {
 static void send_to_java(const SimpleJson& json) {
     int fd = g_java_fd.load();
     if (fd >= 0) {
-        std::string serialized = json.dump() + "\n";
+        std::string serialized = json.toString() + "\n";
         send(fd, serialized.c_str(), serialized.length(), 0);
     } else {
         LOGW("Cannot send to Java: IPC disconnected");
@@ -432,13 +432,14 @@ static void jni_answer_call() {
     send_to_java(json);
 }
 
-static void jni_send_sms(const std::string& number, const std::string& message) {
+static std::string jni_send_sms(const std::string& number, const std::string& message) {
     SimpleJson json;
     json.type = SimpleJson::OBJECT;
     json.object_value["command"] = SimpleJson("send_sms");
     json.object_value["number"] = SimpleJson(number);
     json.object_value["message"] = SimpleJson(message);
     send_to_java(json);
+    return "";
 }
 
 static void remove_pid_file() {
@@ -627,26 +628,7 @@ static bool setup_shared_memory() {
 // JNI Bridge
 // ──────────────────────────────────────────────────────────────────────────
 
-static void init_jni() {
-    LOGI("JNI bridge init skipped in daemon mode. IPC over UDS will be used.");
-}
 
-static void jni_place_call(const std::string& number) {
-    LOGW("jni_place_call IPC not implemented: %s", number.c_str());
-}
-
-static void jni_end_call() {
-    LOGW("jni_end_call IPC not implemented");
-}
-
-static void jni_answer_call() {
-    LOGW("jni_answer_call IPC not implemented");
-}
-
-static std::string jni_send_sms(const std::string& number, const std::string& message) {
-    LOGW("jni_send_sms IPC not implemented: %s", number.c_str());
-    return "";
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // JNI Callbacks (Called from Java)
@@ -1001,7 +983,7 @@ static void read_java_client(int fd) {
         SimpleJson json = SimpleJson::parse(line);
         if (json.type == SimpleJson::OBJECT) {
             std::lock_guard<std::mutex> lock(g_status_mutex);
-            g_status_queue.push(json);
+            g_status_queue.push(json.toString());
         }
     }
     
