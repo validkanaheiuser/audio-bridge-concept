@@ -316,66 +316,41 @@ EOF
     echo -e "${YELLOW}Build APK using Android Studio or ./gradlew assembleRelease${NC}"
 }
 
-# Build Dobby inline-hook as a static library for arm64
-build_dobby() {
-    local ABI=arm64-v8a
-    echo -e "${YELLOW}Building Dobby (inline hook) for $ABI...${NC}"
+# Fetch shadowhook from Maven Central. The AAR bundles prebuilt libshadowhook.so
+# for every ABI plus the public header. Drastically simpler than building from
+# source, and avoids Dobby's master-branch breakage (OSMemory/RuntimeModule,
+# 2026-Q2).
+build_shadowhook() {
+    local VERSION=1.0.10
+    local AAR_URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${VERSION}/shadowhook-${VERSION}.aar"
+    echo -e "${YELLOW}Fetching shadowhook ${VERSION} prebuilt...${NC}"
 
     cd "$BUILD_DIR"
-    if [ ! -d "Dobby" ]; then
-        git clone --depth 1 https://github.com/jmpews/Dobby.git
-
-        # Patch Mach-O-only @PAGE / @PAGEOFF relocs to ELF :lo12: form.
-        # jmpews/Dobby master emits these unconditionally on arm64, which is
-        # invalid for Android/Linux assemblers and breaks clang-14 in NDK r25.
-        echo -e "${YELLOW}Patching Dobby arm64 asm for ELF relocs...${NC}"
-        local patch_stamp="$BUILD_DIR/Dobby/.elf_reloc_patched"
-        if [ ! -f "$patch_stamp" ]; then
-            find "$BUILD_DIR/Dobby" \( -name "*.asm" -o -name "*.S" \) \
-                -exec sed -i \
-                    -e 's/\(adrp[[:space:]]\+[^,]\+,[[:space:]]*[^@[:space:]]*\)@PAGE/\1/g' \
-                    -e 's/\(add[[:space:]]\+[^,]\+,[[:space:]]*[^,]\+,[[:space:]]*\)\([^@[:space:]]*\)@PAGEOFF/\1:lo12:\2/g' \
-                    {} +
-            touch "$patch_stamp"
-        fi
+    if [ ! -f "shadowhook-${VERSION}.aar" ]; then
+        curl -sL -o "shadowhook-${VERSION}.aar" "$AAR_URL"
     fi
 
-    mkdir -p "$BUILD_DIR/dobby-build-$ABI"
-    cd "$BUILD_DIR/dobby-build-$ABI"
-    cmake "$BUILD_DIR/Dobby" \
-        -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-        -DANDROID_ABI=$ABI \
-        -DANDROID_PLATFORM=android-$API_LEVEL \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DDOBBY_DEBUG=OFF \
-        -DBUILD_SHARED_LIBS=OFF
-    cmake --build . -j$(nproc) --target dobby
+    rm -rf "$BUILD_DIR/shadowhook-aar"
+    mkdir -p "$BUILD_DIR/shadowhook-aar"
+    unzip -q -o "shadowhook-${VERSION}.aar" -d "$BUILD_DIR/shadowhook-aar"
 
-    mkdir -p "$LIBS_DIR/$ABI/include/dobby"
-    # dobby may build as libdobby.a or libdobby.so depending on flags — grab .a
-    if [ -f libdobby.a ]; then
-        cp libdobby.a "$LIBS_DIR/$ABI/"
-    elif [ -f libdobby.so ]; then
-        # Some Dobby revisions ignore BUILD_SHARED_LIBS; repackage .so objects
-        echo -e "${YELLOW}Dobby built shared — extracting to static archive${NC}"
-        mkdir -p "$BUILD_DIR/dobby-extract-$ABI"
-        (cd "$BUILD_DIR/dobby-extract-$ABI" && \
-            "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
-                rcs libdobby.a ../dobby-build-$ABI/CMakeFiles/dobby.dir/**/*.o 2>/dev/null || true)
-        cp "$BUILD_DIR/dobby-extract-$ABI/libdobby.a" "$LIBS_DIR/$ABI/" 2>/dev/null \
-            || cp libdobby.so "$LIBS_DIR/$ABI/"
-    fi
-    cp "$BUILD_DIR/Dobby/include/dobby.h" "$LIBS_DIR/$ABI/include/dobby/"
-    echo -e "${GREEN}Dobby built for $ABI${NC}"
+    for ABI in arm64-v8a armeabi-v7a; do
+        mkdir -p "$LIBS_DIR/$ABI/include/shadowhook"
+        cp "$BUILD_DIR/shadowhook-aar/jni/$ABI/libshadowhook.so" "$LIBS_DIR/$ABI/" || \
+            echo -e "${RED}shadowhook: missing .so for $ABI${NC}"
+        cp "$BUILD_DIR/shadowhook-aar/prefab/modules/shadowhook/include/shadowhook.h" \
+            "$LIBS_DIR/$ABI/include/shadowhook/"
+    done
+    echo -e "${GREEN}shadowhook ${VERSION} ready${NC}"
 }
 
 # Build Zygisk module
 build_zygisk() {
     echo -e "${YELLOW}Building Zygisk module...${NC}"
 
-    # Ensure Dobby is available
-    if [ ! -f "$LIBS_DIR/arm64-v8a/libdobby.a" ]; then
-        build_dobby
+    # Ensure shadowhook is available
+    if [ ! -f "$LIBS_DIR/arm64-v8a/libshadowhook.so" ]; then
+        build_shadowhook
     fi
 
     cd "$PROJECT_DIR/zygisk"
@@ -392,7 +367,9 @@ build_zygisk() {
     mkdir -p "$PROJECT_DIR/zygisk/module"
     mkdir -p "$PROJECT_DIR/zygisk/module/zygisk"
 
-    # Compile Zygisk module (links Dobby statically for inline hooking)
+    # Compile Zygisk module. We don't link against libshadowhook.so — the
+    # module dlopens it at runtime from its own install dir (see src/) so we
+    # don't need to arrange for the dynamic linker to find it.
     $CXX \
         -std=c++17 \
         -O3 \
@@ -401,13 +378,15 @@ build_zygisk() {
         -DANDROID \
         -I"$PROJECT_DIR/zygisk" \
         -I"$LIBS_DIR/arm64-v8a/include" \
-        -I"$LIBS_DIR/arm64-v8a/include/dobby" \
+        -I"$LIBS_DIR/arm64-v8a/include/shadowhook" \
         src/zygisk_module.cpp \
         -o "$PROJECT_DIR/zygisk/module/zygisk/arm64-v8a.so" \
-        -L"$LIBS_DIR/arm64-v8a" \
-        -Wl,--whole-archive -ldobby -Wl,--no-whole-archive \
         -Wl,--gc-sections \
+        -ldl \
         -llog
+
+    # Ship libshadowhook.so alongside our zygisk module
+    cp "$LIBS_DIR/arm64-v8a/libshadowhook.so" "$PROJECT_DIR/zygisk/module/zygisk/"
     
     # Package into Magisk Module
     mkdir -p "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge"

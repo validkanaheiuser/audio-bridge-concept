@@ -13,7 +13,29 @@
 #include <unistd.h>
 #include <thread>
 #include "zygisk.hpp"
-#include "dobby.h"
+
+// shadowhook (bytedance/android-inline-hook) — dlopen'd at runtime from the
+// module's own install dir. We only need a couple of its symbols, so we
+// declare the types locally and resolve via dlsym.
+typedef enum { SHADOWHOOK_MODE_SHARED = 0, SHADOWHOOK_MODE_UNIQUE = 1 } shadowhook_mode_t;
+using shadowhook_init_t            = int  (*)(shadowhook_mode_t, bool);
+using shadowhook_hook_sym_name_t   = void*(*)(const char*, const char*, void*, void**);
+using shadowhook_get_errno_t       = int  (*)(void);
+using shadowhook_to_errmsg_t       = const char* (*)(int);
+using shadowhook_dlopen_t          = void*(*)(const char*);
+using shadowhook_dlsym_symtab_t    = void*(*)(void*, const char*);
+
+static shadowhook_init_t           sh_init            = nullptr;
+static shadowhook_hook_sym_name_t  sh_hook_sym_name   = nullptr;
+static shadowhook_get_errno_t      sh_get_errno       = nullptr;
+static shadowhook_to_errmsg_t      sh_to_errmsg       = nullptr;
+static shadowhook_dlopen_t         sh_dlopen          = nullptr;
+static shadowhook_dlsym_symtab_t   sh_dlsym_symtab    = nullptr;
+
+// Module id as declared in module.prop. Used to locate libshadowhook.so on
+// disk; see load_shadowhook() below.
+static constexpr const char* kShadowhookPath =
+    "/data/adb/modules/audio_bridge/zygisk/libshadowhook.so";
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AudioBridge-Zygisk", __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AudioBridge-Zygisk", __VA_ARGS__)
@@ -58,8 +80,8 @@ struct LeftoverBuf {
 };
 static thread_local LeftoverBuf g_mic_leftover;
 
-// Signatures used by Android 12+. We link via DobbySymbolResolver rather than
-// symbol-name demangling, but the signatures are what we cast to.
+// Signatures used by Android 12+. shadowhook hooks by (lib, mangled symbol)
+// and returns a stub; we just need the right function-pointer casts.
 using AudioRecord_read_t          = ssize_t (*)(void*, void*, size_t, bool);
 using AudioTrack_write_t          = ssize_t (*)(void*, const void*, size_t, bool);
 using AudioRecord_getSampleRate_t = uint32_t (*)(const void*);
@@ -335,60 +357,106 @@ static bool app_should_hook(const char* nice_name) {
     return false;
 }
 
-// ─── Dobby hook installer ──────────────────────────────────────────────────
+// ─── shadowhook loader + hook installer ────────────────────────────────────
+
+static bool load_shadowhook() {
+    void* h = dlopen(kShadowhookPath, RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+        // Fallback: let the linker try its own search path (in case an
+        // enterprising user placed it in /system/lib64).
+        h = dlopen("libshadowhook.so", RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (!h) {
+        LOGE("dlopen libshadowhook.so failed: %s", dlerror());
+        return false;
+    }
+    sh_init          = (shadowhook_init_t)          dlsym(h, "shadowhook_init");
+    sh_hook_sym_name = (shadowhook_hook_sym_name_t) dlsym(h, "shadowhook_hook_sym_name");
+    sh_get_errno     = (shadowhook_get_errno_t)     dlsym(h, "shadowhook_get_errno");
+    sh_to_errmsg     = (shadowhook_to_errmsg_t)     dlsym(h, "shadowhook_to_errmsg");
+    sh_dlopen        = (shadowhook_dlopen_t)        dlsym(h, "shadowhook_dlopen");
+    sh_dlsym_symtab  = (shadowhook_dlsym_symtab_t)  dlsym(h, "shadowhook_dlsym_symtab");
+    if (!sh_init || !sh_hook_sym_name) {
+        LOGE("shadowhook symbols missing");
+        return false;
+    }
+    int rc = sh_init(SHADOWHOOK_MODE_SHARED, false);
+    if (rc != 0) {
+        const char* msg = sh_to_errmsg ? sh_to_errmsg(rc) : "?";
+        LOGE("shadowhook_init failed: %d (%s)", rc, msg);
+        return false;
+    }
+    LOGI("shadowhook loaded and initialised");
+    return true;
+}
+
+// Resolve a symbol in a loaded lib. getSampleRate() is a non-exported member
+// accessor — plain dlsym won't find it. shadowhook_dlsym_symtab walks the
+// .symtab section which includes local symbols, so it succeeds where dlsym
+// fails. Falls back to dlsym for libs where shadowhook can't handle it.
+static void* resolve_sym(const char* lib, const char* sym) {
+    if (sh_dlopen && sh_dlsym_symtab) {
+        void* h = sh_dlopen(lib);
+        if (h) {
+            void* p = sh_dlsym_symtab(h, sym);
+            if (p) return p;
+        }
+    }
+    void* h = dlopen(lib, RTLD_NOW | RTLD_NOLOAD);
+    if (!h) h = dlopen(lib, RTLD_NOW);
+    return h ? dlsym(h, sym) : nullptr;
+}
+
+static bool try_hook(const char* lib, const char* const* syms, void* new_fn, void** orig_out) {
+    for (int i = 0; syms[i]; ++i) {
+        void* stub = sh_hook_sym_name(lib, syms[i], new_fn, orig_out);
+        if (stub != nullptr) {
+            LOGI("hooked %s", syms[i]);
+            return true;
+        }
+        int err = sh_get_errno ? sh_get_errno() : -1;
+        const char* msg = (sh_to_errmsg && err > 0) ? sh_to_errmsg(err) : "?";
+        // PENDING (errno==1) means the hook will apply once the lib loads —
+        // count that as success too.
+        if (err == 1 /* SHADOWHOOK_ERRNO_PENDING */) {
+            LOGI("pending hook on %s (lib not loaded yet)", syms[i]);
+            return true;
+        }
+        LOGW("hook %s failed: %d (%s)", syms[i], err, msg);
+    }
+    return false;
+}
 
 static bool install_inline_hooks() {
-    // AudioRecord::read(void*, size_t, bool) — Android 12+
-    void* read_sym = DobbySymbolResolver("libaudioclient.so",
-        "_ZN7android11AudioRecord4readEPvmb");
-    if (!read_sym) {
-        // Android 10/11 legacy: (void*, unsigned int)
-        read_sym = DobbySymbolResolver("libaudioclient.so",
-            "_ZN7android11AudioRecord4readEPvj");
-    }
-    if (read_sym) {
-        if (DobbyHook(read_sym, (void*)hooked_audio_record_read,
-                      (void**)&original_audio_record_read) == 0) {
-            LOGI("AudioRecord::read hooked at %p", read_sym);
-        } else {
-            LOGE("DobbyHook(AudioRecord::read) failed");
-            read_sym = nullptr;
-        }
-    } else {
-        LOGW("AudioRecord::read symbol not found in libaudioclient.so");
-    }
+    if (!sh_hook_sym_name) return false;
 
-    // AudioTrack::write(const void*, size_t, bool) — Android 12+
-    void* write_sym = DobbySymbolResolver("libaudioclient.so",
-        "_ZN7android10AudioTrack5writeEPKvmb");
-    if (!write_sym) {
-        write_sym = DobbySymbolResolver("libaudioclient.so",
-            "_ZN7android10AudioTrack5writeEPKvj");
-    }
-    if (write_sym) {
-        if (DobbyHook(write_sym, (void*)hooked_audio_track_write,
-                      (void**)&original_audio_track_write) == 0) {
-            LOGI("AudioTrack::write hooked at %p", write_sym);
-        } else {
-            LOGE("DobbyHook(AudioTrack::write) failed");
-            write_sym = nullptr;
-        }
-    } else {
-        LOGW("AudioTrack::write symbol not found in libaudioclient.so");
-    }
+    static const char* kReadSyms[] = {
+        "_ZN7android11AudioRecord4readEPvmb",  // Android 12+
+        "_ZN7android11AudioRecord4readEPvj",   // legacy
+        nullptr,
+    };
+    static const char* kWriteSyms[] = {
+        "_ZN7android10AudioTrack5writeEPKvmb", // Android 12+
+        "_ZN7android10AudioTrack5writeEPKvj",  // legacy
+        nullptr,
+    };
 
-    // Resolve getSampleRate() accessors (const, no args). These are tiny inline
-    // getters in newer Android versions — resolver may or may not find them.
-    // Without them we assume 48kHz; apps that open at a different rate just
-    // get garbled audio (the previous behaviour).
-    g_ar_get_sample_rate = (AudioRecord_getSampleRate_t)DobbySymbolResolver(
+    bool r = try_hook("libaudioclient.so", kReadSyms,
+                      (void*)hooked_audio_record_read,
+                      (void**)&original_audio_record_read);
+    bool w = try_hook("libaudioclient.so", kWriteSyms,
+                      (void*)hooked_audio_track_write,
+                      (void**)&original_audio_track_write);
+
+    // getSampleRate() accessors — plain pointer, no hook.
+    g_ar_get_sample_rate = (AudioRecord_getSampleRate_t)resolve_sym(
         "libaudioclient.so", "_ZNK7android11AudioRecord13getSampleRateEv");
-    g_at_get_sample_rate = (AudioTrack_getSampleRate_t)DobbySymbolResolver(
+    g_at_get_sample_rate = (AudioTrack_getSampleRate_t)resolve_sym(
         "libaudioclient.so", "_ZNK7android10AudioTrack13getSampleRateEv");
     LOGI("getSampleRate: AR=%p AT=%p",
          (void*)g_ar_get_sample_rate, (void*)g_at_get_sample_rate);
 
-    return read_sym || write_sym;
+    return r || w;
 }
 
 // ─── Daemon socket connection ──────────────────────────────────────────────
@@ -471,12 +539,16 @@ public:
     void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
         if (skip) return;
 
-        // libaudioclient.so may be dlopened lazily. Try to force-load it so
-        // DobbySymbolResolver can see the symbols. This is harmless; the real
-        // call into audio APIs will load it anyway.
+        // Force-load libaudioclient.so so hook/symbol resolution can see it.
+        // Harmless — any real AudioRecord/AudioTrack use pulls it in anyway.
         void* h = dlopen("libaudioclient.so", RTLD_NOW | RTLD_GLOBAL);
         if (!h) {
             LOGW("dlopen(libaudioclient.so) failed: %s", dlerror());
+        }
+
+        if (!load_shadowhook()) {
+            LOGE("shadowhook unavailable — audio injection disabled");
+            return;
         }
 
         if (!install_inline_hooks()) {
