@@ -40,6 +40,19 @@ public class IPCClient {
     private boolean mRunning = false;
     private ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private Handler mMainHandler = new Handler(Looper.getMainLooper());
+    private android.content.Context mContext;
+
+    public static synchronized IPCClient init(android.content.Context ctx) {
+        if (sInstance == null) {
+            sInstance = new IPCClient();
+        }
+        sInstance.mContext = ctx.getApplicationContext();
+        return sInstance;
+    }
+
+    private void setStatus(String line) {
+        AudioBridgeService.updateStatus(mContext, line);
+    }
 
     private static void diag(String msg) {
         Log.i(TAG, msg);
@@ -66,6 +79,7 @@ public class IPCClient {
         mRunning = true;
         diag("startConnectionThread() — pid=" + android.os.Process.myPid()
              + " uid=" + android.os.Process.myUid());
+        setStatus("Connecting to daemon…");
         mExecutor.execute(() -> {
             int attempt = 0;
             while (mRunning) {
@@ -75,6 +89,7 @@ public class IPCClient {
                 } catch (Exception e) {
                     diag("connect attempt " + attempt + " failed: "
                          + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    setStatus("Daemon unreachable · retry " + attempt);
                     try { Thread.sleep(5000); } catch (InterruptedException ie) {}
                 }
             }
@@ -93,6 +108,7 @@ public class IPCClient {
         // Handshake
         mOut.println("HELO_JAVA");
         diag("Connected — HELO_JAVA sent");
+        setStatus("Daemon connected · telephony ready");
         
         String line;
         while (mRunning && (line = mIn.readLine()) != null) {

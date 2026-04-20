@@ -11,6 +11,7 @@ pm grant com.audiobridge android.permission.READ_PHONE_STATE 2>/dev/null
 pm grant com.audiobridge android.permission.SEND_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
+pm grant com.audiobridge android.permission.POST_NOTIFICATIONS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
 # Apply SELinux rules at runtime. sepolicy.rule is read by Magisk/KernelSU on

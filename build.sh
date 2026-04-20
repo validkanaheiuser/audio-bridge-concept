@@ -207,12 +207,19 @@ build_apk() {
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
-        android:allowBackup="true"
-        android:supportsRtl="true">
-        
+        android:label="@string/app_name"
+        android:icon="@android:drawable/ic_menu_call"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:localeConfig="@xml/locales_config">
+
         <service
             android:name=".AudioBridgeService"
             android:enabled="true"
@@ -232,12 +239,34 @@ build_apk() {
 </manifest>
 EOF
 
-    # Create strings.xml
+    # Create strings.xml. The english default ensures updateLocaleListFromAppContext
+    # has something to resolve — Android 14 NPE's in handleBindApplication if
+    # resources are under-specified.
     cat > app/src/main/res/values/strings.xml << 'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Audio Bridge</string>
+    <string name="notification_title">Audio Bridge</string>
+    <string name="notification_text">Running in background</string>
 </resources>
+EOF
+
+    # locale_config referenced by @string lookups during bind-application.
+    # Without this, priv-app scanning on API 34 has been observed to init
+    # Resources as null and crash with getResources().getConfiguration() NPE.
+    mkdir -p app/src/main/res/xml
+    cat > app/src/main/res/xml/locales_config.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en"/>
+</locale-config>
+EOF
+
+    cat > app/src/main/res/xml/network_security_config.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true"/>
+</network-security-config>
 EOF
 
     # Copy native library
@@ -483,6 +512,7 @@ pm grant com.audiobridge android.permission.READ_PHONE_STATE 2>/dev/null
 pm grant com.audiobridge android.permission.SEND_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
+pm grant com.audiobridge android.permission.POST_NOTIFICATIONS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
 # Apply SELinux rules. sepolicy.rule is read by Magisk/KernelSU on boot; this

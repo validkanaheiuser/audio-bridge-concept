@@ -79,7 +79,7 @@ public class AudioBridgeService extends Service {
             diag("FGS start failed — service will be killed within 5s");
         }
         TelephonyHelper.getInstance(this);
-        IPCClient.getInstance();
+        IPCClient.init(this);
         diag("onCreate finished (fg=" + fg + ")");
     }
 
@@ -102,8 +102,12 @@ public class AudioBridgeService extends Service {
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "Audio Bridge", NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Audio Bridge background service");
+                CHANNEL_ID, "Audio Bridge",
+                NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("Audio Bridge status");
+            channel.setShowBadge(true);
+            channel.setSound(null, null);     // visible but silent
+            channel.enableVibration(false);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
@@ -112,17 +116,35 @@ public class AudioBridgeService extends Service {
     }
 
     private Notification buildNotification() {
-        Notification.Builder builder;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder = new Notification.Builder(this, CHANNEL_ID);
-        } else {
-            builder = new Notification.Builder(this);
-        }
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            ? new Notification.Builder(this, CHANNEL_ID)
+            : new Notification.Builder(this);
         return builder
-            .setContentTitle("Audio Bridge")
-            .setContentText("Running in background")
+            .setContentTitle(getString(R.string.notification_title))
+            .setContentText(getString(R.string.notification_text))
             .setSmallIcon(android.R.drawable.ic_menu_call)
             .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .build();
+    }
+
+    /** Called from IPCClient when the daemon connection state changes. */
+    public static void updateStatus(android.content.Context ctx, String stateLine) {
+        if (ctx == null) return;
+        try {
+            NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+            if (nm == null) return;
+            Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(ctx, CHANNEL_ID)
+                : new Notification.Builder(ctx);
+            nm.notify(NOTIFICATION_ID, b
+                .setContentTitle("Audio Bridge")
+                .setContentText(stateLine)
+                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .build());
+        } catch (Exception ignored) {}
     }
 }
