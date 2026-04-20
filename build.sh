@@ -447,13 +447,25 @@ ui_print "- Installing Audio Bridge"
 ui_print "- Android 14 Compatible"
 EOF
 
-    # Create sepolicy.rule to allow various app domains to connect to daemon's unix socket
+    # Create sepolicy.rule for every (app, daemon) domain pair we might hit.
+    # KernelSU's service.sh runs the daemon in `ksu`; Magisk puts it in `magisk`
+    # or `su`. The app is `priv_app` (priv-app install) or `system_app`; the
+    # Phone process is `radio`. Without this, LocalSocket.connect() gets an
+    # EACCES via SELinux and `am broadcast` succeeds but IPC silently fails.
     cat > "$PROJECT_DIR/zygisk/module/sepolicy.rule" << 'EOF'
-allow radio su unix_stream_socket { connectto read write getattr }
-allow radio magisk unix_stream_socket { connectto read write getattr }
-allow platform_app su unix_stream_socket { connectto read write getattr }
-allow priv_app su unix_stream_socket { connectto read write getattr }
-allow system_app su unix_stream_socket { connectto read write getattr }
+allow priv_app   ksu     unix_stream_socket { connectto read write getattr }
+allow priv_app   magisk  unix_stream_socket { connectto read write getattr }
+allow priv_app   su      unix_stream_socket { connectto read write getattr }
+allow priv_app   init    unix_stream_socket { connectto read write getattr }
+allow system_app ksu     unix_stream_socket { connectto read write getattr }
+allow system_app magisk  unix_stream_socket { connectto read write getattr }
+allow system_app su      unix_stream_socket { connectto read write getattr }
+allow platform_app ksu   unix_stream_socket { connectto read write getattr }
+allow platform_app magisk unix_stream_socket { connectto read write getattr }
+allow platform_app su    unix_stream_socket { connectto read write getattr }
+allow radio      ksu     unix_stream_socket { connectto read write getattr }
+allow radio      magisk  unix_stream_socket { connectto read write getattr }
+allow radio      su      unix_stream_socket { connectto read write getattr }
 EOF
 
     # Create service.sh (runs during late_start - safe, non-blocking)
@@ -473,19 +485,29 @@ pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
-# Apply SELinux rules dynamically (supports Magisk, KernelSU, and supolicy)
-# Allow phone process (radio) and the audiobridge app to use abstract unix sockets
-for TOOL in magiskpolicy supolicy /data/adb/ksud; do
-    if command -v $TOOL >/dev/null 2>&1 || [ -f "$TOOL" ]; then
-        $TOOL --live "allow radio su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow radio magisk unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow platform_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow priv_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow system_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        echo "$(date) SELinux rules applied via $TOOL" >> $LOG
-        break
-    fi
-done
+# Apply SELinux rules. sepolicy.rule is read by Magisk/KernelSU on boot; this
+# is the belt to that file's suspenders. Rules cover every (app, daemon)
+# domain pair we might hit.
+APP_DOMAINS="priv_app system_app platform_app radio"
+DAEMON_DOMAINS="ksu magisk su init"
+if command -v magiskpolicy >/dev/null 2>&1; then
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        magiskpolicy --live "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via magiskpolicy" >> $LOG
+elif [ -f /data/adb/ksud ]; then
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        /data/adb/ksud apply-sepolicy "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via ksud" >> $LOG
+elif command -v supolicy >/dev/null 2>&1; then
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        supolicy --live "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via supolicy" >> $LOG
+else
+    echo "$(date) WARNING: no sepolicy tool found" >> $LOG
+fi
 
 # Start daemon if not running
 if ! pidof audio-bridge >/dev/null 2>&1; then

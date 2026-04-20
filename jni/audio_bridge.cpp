@@ -312,6 +312,20 @@ struct SharedMemoryLayout {
 
 #define LOG_TAG "AudioBridge"
 
+static std::string read_self_context() {
+    FILE* f = fopen("/proc/self/attr/current", "r");
+    if (!f) return "unknown";
+    char buf[256] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return "unknown";
+    // Strip trailing whitespace/nulls
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == ' ' || buf[n-1] == '\0')) {
+        buf[--n] = '\0';
+    }
+    return std::string(buf);
+}
+
 static void log_init() {
     g_log_file = fopen("/data/local/tmp/audio_bridge.log", "a");
     if(g_log_file) {
@@ -983,7 +997,25 @@ static void receive_virtual_mic_thread(mbedtls_net_context* net) {
 }
 
 static void read_java_client(int fd) {
-    LOGI("Java IPC Client connected (fd %d)", fd);
+    // Log the peer's SELinux context — useful for crafting sepolicy rules.
+    char peercon[256] = "unknown";
+    socklen_t peer_len = sizeof(peercon);
+    struct ucred cred{};
+    socklen_t cred_len = sizeof(cred);
+    getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len);
+    // Read /proc/<pid>/attr/current for the peer's label.
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/attr/current", cred.pid);
+    if (FILE* f = fopen(path, "r")) {
+        size_t n = fread(peercon, 1, sizeof(peercon) - 1, f);
+        fclose(f);
+        if (n > 0) {
+            peercon[n] = '\0';
+            while (n > 0 && (peercon[n-1] == '\n' || peercon[n-1] == '\0')) peercon[--n] = '\0';
+        }
+    }
+    LOGI("Java IPC Client connected (fd=%d pid=%d uid=%d peercon=%s)",
+         fd, cred.pid, cred.uid, peercon);
     g_java_fd.store(fd);
     
     FILE* f = fdopen(fd, "r");
@@ -1189,9 +1221,11 @@ int main(int argc, char** argv) {
     write_pid_file();
     
     LOGI("╔══════════════════════════════════════════════════════════════╗");
-    LOGI("║     Audio Bridge v%d.%d.%d - Full Telephony & SMS Control    ║", 
+    LOGI("║     Audio Bridge v%d.%d.%d - Full Telephony & SMS Control    ║",
          VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
     LOGI("╚══════════════════════════════════════════════════════════════╝");
+    LOGI("SELinux context: %s (daemon domain — add sepolicy rules against this)",
+         read_self_context().c_str());
     if(g_host) {
         LOGI("Target: %s:%d", g_host, g_port);
     } else {

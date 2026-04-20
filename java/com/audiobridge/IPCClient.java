@@ -10,26 +10,46 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class IPCClient {
     private static final String TAG = "AudioBridge-IPC";
     private static final String SOCKET_NAME = "audio_bridge";
+    // Diagnostics log: writable by the app, readable by root. Lets you see
+    // what the Java side is doing without needing adb logcat.
+    private static final String DIAG_LOG = "/data/local/tmp/audio_bridge_java.log";
+    private static final SimpleDateFormat TS =
+        new SimpleDateFormat("HH:mm:ss", Locale.US);
 
     private static IPCClient sInstance;
-    
+
     private LocalSocket mSocket;
     private PrintWriter mOut;
     private BufferedReader mIn;
-    
+
     private boolean mRunning = false;
     private ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private Handler mMainHandler = new Handler(Looper.getMainLooper());
+
+    private static void diag(String msg) {
+        Log.i(TAG, msg);
+        try (FileWriter w = new FileWriter(DIAG_LOG, true)) {
+            w.write(TS.format(new Date()) + " " + msg + "\n");
+        } catch (IOException ignored) {
+            // /data/local/tmp is usually priv_app-writable via shell_data_file
+            // grants in our sepolicy.rule; if not, we still have logcat.
+        }
+    }
     
     public static synchronized IPCClient getInstance() {
         if (sInstance == null) {
@@ -44,12 +64,17 @@ public class IPCClient {
 
     private void startConnectionThread() {
         mRunning = true;
+        diag("startConnectionThread() — pid=" + android.os.Process.myPid()
+             + " uid=" + android.os.Process.myUid());
         mExecutor.execute(() -> {
+            int attempt = 0;
             while (mRunning) {
+                attempt++;
                 try {
                     connectAndListen();
                 } catch (Exception e) {
-                    Log.w(TAG, "IPC Connection dropped, retrying in 5s: " + e.getMessage());
+                    diag("connect attempt " + attempt + " failed: "
+                         + e.getClass().getSimpleName() + ": " + e.getMessage());
                     try { Thread.sleep(5000); } catch (InterruptedException ie) {}
                 }
             }
@@ -57,17 +82,17 @@ public class IPCClient {
     }
 
     private void connectAndListen() throws IOException, JSONException {
-        Log.i(TAG, "Attempting to connect to daemon UDS...");
-        
+        diag("Connecting to abstract socket @" + SOCKET_NAME);
+
         mSocket = new LocalSocket();
         mSocket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
-        
+
         mOut = new PrintWriter(new OutputStreamWriter(mSocket.getOutputStream()), true);
         mIn = new BufferedReader(new InputStreamReader(mSocket.getInputStream()));
-        
+
         // Handshake
         mOut.println("HELO_JAVA");
-        Log.i(TAG, "Connected to native daemon via UDS");
+        diag("Connected — HELO_JAVA sent");
         
         String line;
         while (mRunning && (line = mIn.readLine()) != null) {

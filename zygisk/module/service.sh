@@ -13,18 +13,30 @@ pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
-# Apply SELinux rules dynamically (Magisk, KernelSU, supolicy)
-for TOOL in magiskpolicy supolicy /data/adb/ksud; do
-    if command -v $TOOL >/dev/null 2>&1 || [ -f "$TOOL" ]; then
-        $TOOL --live "allow radio su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow radio magisk unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow platform_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow priv_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        $TOOL --live "allow system_app su unix_stream_socket { connectto read write }" 2>/dev/null
-        echo "$(date) SELinux rules applied via $TOOL" >> $LOG
-        break
-    fi
-done
+# Apply SELinux rules at runtime. sepolicy.rule is read by Magisk/KernelSU on
+# boot, but a live push covers reinstalls and testing. The rule set covers
+# every (app_domain -> daemon_domain) pair we might encounter.
+APP_DOMAINS="priv_app system_app platform_app radio"
+DAEMON_DOMAINS="ksu magisk su init"
+if command -v magiskpolicy >/dev/null 2>&1; then
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        magiskpolicy --live "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via magiskpolicy" >> $LOG
+elif [ -f /data/adb/ksud ]; then
+    # KernelSU: apply-sepolicy accepts one rule per -- invocation.
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        /data/adb/ksud apply-sepolicy "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via ksud" >> $LOG
+elif command -v supolicy >/dev/null 2>&1; then
+    for APP in $APP_DOMAINS; do for D in $DAEMON_DOMAINS; do
+        supolicy --live "allow $APP $D unix_stream_socket { connectto read write getattr }" 2>/dev/null
+    done; done
+    echo "$(date) SELinux rules applied via supolicy" >> $LOG
+else
+    echo "$(date) WARNING: no sepolicy tool found" >> $LOG
+fi
 
 # Start daemon if not running
 if ! pidof audio-bridge >/dev/null 2>&1; then
