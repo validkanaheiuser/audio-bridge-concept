@@ -312,9 +312,25 @@ android.suppressUnsupportedCompileSdk=34
 org.gradle.jvmargs=-Xmx2048m
 EOF
 
-    # Generate a release keystore if none exists. Without this, gradle emits
-    # an unsigned APK and Android rejects it with INSTALL_PARSE_FAILED_NO_CERTIFICATES.
-    # Override with env var AUDIO_BRIDGE_KEYSTORE to use your own signing key.
+    # ── Gradle wrapper bootstrap ────────────────────────────────────────
+    # AGP 8.2.2 needs Gradle ≥ 8.2. CI runners ship Gradle 8.1.1, which
+    # refuses to evaluate a build.gradle that references AGP 8.2.2
+    # ("Minimum supported Gradle version is 8.2"). We bootstrap by:
+    #   1. Writing a MINIMAL build.gradle that the system gradle can load,
+    #   2. Running `gradle wrapper --gradle-version 8.5` — which produces
+    #      a gradlew that pulls its own Gradle 8.5 dist,
+    #   3. Overwriting build.gradle with the real AGP config BEFORE the
+    #      wrapper invokes assembleRelease.
+    if [ ! -f "$PROJECT_DIR/app/gradlew" ] && command -v gradle >/dev/null 2>&1; then
+        echo -e "${YELLOW}Bootstrapping gradle wrapper (stub build.gradle)...${NC}"
+        cat > app/build.gradle << 'EOF'
+// wrapper bootstrap stub — real build.gradle is written below, after gradlew exists
+EOF
+        ( cd "$PROJECT_DIR/app" && gradle wrapper --gradle-version 8.5 --quiet ) || \
+            echo -e "${RED}gradle wrapper bootstrap failed${NC}"
+    fi
+
+    # Generate a release keystore if none exists.
     local KEYSTORE_PATH="${AUDIO_BRIDGE_KEYSTORE:-$PROJECT_DIR/app/audiobridge.keystore}"
     local KEYSTORE_PASS="${AUDIO_BRIDGE_KEYSTORE_PASS:-audiobridge}"
     local KEYSTORE_ALIAS="${AUDIO_BRIDGE_KEYSTORE_ALIAS:-audiobridge}"
@@ -700,23 +716,16 @@ main() {
     # Prepare APK sources
     build_apk
     
-    # Try to build APK if gradle is available. Generate a wrapper once so
-    # subsequent builds are self-contained.
-    echo -e "${YELLOW}Attempting to build APK using gradle...${NC}"
-    if [ ! -f "$PROJECT_DIR/app/gradlew" ] && command -v gradle >/dev/null 2>&1; then
-        echo -e "${YELLOW}Generating gradle wrapper...${NC}"
-        ( cd "$PROJECT_DIR/app" && gradle wrapper --gradle-version 8.4 ) || \
-            echo -e "${RED}Failed to generate gradle wrapper${NC}"
-    fi
-
+    # Build the APK. The wrapper was bootstrapped inside build_apk already
+    # (before we wrote the real AGP-referencing build.gradle), so we just
+    # have to invoke ./gradlew here.
+    echo -e "${YELLOW}Building APK via gradle wrapper...${NC}"
     if [ -f "$PROJECT_DIR/app/gradlew" ]; then
         ( cd "$PROJECT_DIR/app" && chmod +x gradlew && ./gradlew assembleRelease --no-daemon ) || \
             echo -e "${RED}Gradlew build failed${NC}"
-    elif command -v gradle >/dev/null 2>&1; then
-        ( cd "$PROJECT_DIR/app" && gradle assembleRelease --no-daemon ) || \
-            echo -e "${RED}Gradle build failed${NC}"
     else
-        echo -e "${RED}Gradle not found. Install gradle (>=8) and re-run, or open app/ in Android Studio.${NC}"
+        echo -e "${RED}gradlew missing — wrapper bootstrap failed in build_apk.${NC}"
+        echo -e "${RED}Install gradle (>=8.0) and re-run, or open app/ in Android Studio.${NC}"
     fi
     cd "$PROJECT_DIR"
     
