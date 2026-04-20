@@ -898,14 +898,21 @@ static void receive_virtual_mic_thread(mbedtls_net_context* net) {
     
     while(g_running && g_connected) {
         if(!recv_all(net, hdr, 5)) break;
-        
+
         uint8_t type = hdr[0];
         uint32_t len = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                        ((uint32_t)hdr[3] <<  8) | ((uint32_t)hdr[4]);
-        
-        if(len == 0 || len > MAX_PKT) break;
-        if(!recv_all(net, pkt.data(), len)) break;
-        
+
+        // Only oversize is fatal. Zero-length is legitimate for T_PONG and
+        // similar keepalive replies — treating it as fatal was disconnecting
+        // the daemon 10s after connect (the watchdog ping cadence).
+        if(len > MAX_PKT) break;
+        if(len > 0 && !recv_all(net, pkt.data(), len)) break;
+
+        // Server-originated keepalive: daemon sends T_PING from the watchdog,
+        // server replies with T_PONG (empty). Nothing to do.
+        if(type == T_PONG) continue;
+
         // Handle Control Messages
         if(type == T_CONTROL) {
             pkt.data()[len] = '\0';
@@ -1231,10 +1238,10 @@ int main(int argc, char** argv) {
         }
         
         g_connected = false;
-        LOGI("Connecting to %s:%d (TCP)...", g_host, g_port);
-        
+
         if(!tcp_connect(g_host, g_port)) {
-            LOGW("TCP Connection failed, retrying in 15s");
+            // tcp_connect already logged the attempt and its failure
+            LOGW("Retrying in 15s");
             sleep(15);
             continue;
         }

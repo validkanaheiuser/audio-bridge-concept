@@ -45,6 +45,33 @@ else
     echo "$(date) Daemon already running, PID: $(pidof audio-bridge)" >> $LOG
 fi
 
-# Start AudioBridge Java service
-am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1
-echo "$(date) AudioBridgeService launch requested" >> $LOG
+# Background: wait for framework, install APK if needed, start service.
+(
+    for i in $(seq 1 60); do
+        if [ "$(getprop sys.boot_completed)" = "1" ]; then break; fi
+        sleep 2
+    done
+    sleep 3
+
+    # Fallback install: if priv-app overlay didn't register com.audiobridge
+    # (e.g. signing mismatch on restrictive ROMs), pm install from MODDIR.
+    if ! pm path com.audiobridge >/dev/null 2>&1; then
+        if [ -f "$MODDIR/AudioBridge.apk" ]; then
+            echo "$(date) com.audiobridge not registered as priv-app; pm install fallback" >> $LOG
+            pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
+        else
+            echo "$(date) WARNING: AudioBridge.apk missing from module" >> $LOG
+        fi
+    else
+        echo "$(date) com.audiobridge present at $(pm path com.audiobridge)" >> $LOG
+    fi
+
+    for i in 1 2 3 4 5; do
+        if am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1; then
+            echo "$(date) AudioBridgeService launched (try $i)" >> $LOG
+            exit 0
+        fi
+        sleep 3
+    done
+    echo "$(date) WARNING: AudioBridgeService never launched" >> $LOG
+) &

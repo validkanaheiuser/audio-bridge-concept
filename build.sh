@@ -485,9 +485,39 @@ else
     echo "$(date) Daemon already running, PID: $(pidof audio-bridge)" >> $LOG
 fi
 
-# Start AudioBridge Java service (handles SMS/calls via IPC)
-am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1
-echo "$(date) AudioBridgeService launch requested" >> $LOG
+# Background: wait for the framework, install APK if needed, start service.
+(
+    # Wait for boot_completed (cap ~2 min).
+    for i in $(seq 1 60); do
+        if [ "$(getprop sys.boot_completed)" = "1" ]; then break; fi
+        sleep 2
+    done
+    sleep 3
+
+    # Fallback install: if priv-app overlay didn't register com.audiobridge
+    # (e.g. signing mismatch on restrictive ROMs), pm install from MODDIR.
+    if ! pm path com.audiobridge >/dev/null 2>&1; then
+        if [ -f "$MODDIR/AudioBridge.apk" ]; then
+            echo "$(date) com.audiobridge not registered as priv-app; pm install fallback" >> $LOG
+            pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
+        else
+            echo "$(date) WARNING: AudioBridge.apk missing from module" >> $LOG
+        fi
+    else
+        echo "$(date) com.audiobridge present at $(pm path com.audiobridge)" >> $LOG
+    fi
+
+    # Start the foreground service — retry because activity may still be
+    # registering a beat after boot_completed on some devices.
+    for i in 1 2 3 4 5; do
+        if am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1; then
+            echo "$(date) AudioBridgeService launched (try $i)" >> $LOG
+            exit 0
+        fi
+        sleep 3
+    done
+    echo "$(date) WARNING: AudioBridgeService never launched" >> $LOG
+) &
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/service.sh"
 
@@ -542,10 +572,17 @@ main() {
     # Build Zygisk module
     build_zygisk
     
-    # Package APK and binary into module
+    # Package APK and binary into module. We ship two copies:
+    #   1. system/priv-app/AudioBridge/AudioBridge.apk — Magisk systemless overlay
+    #      makes /system/priv-app/ include the APK; Android picks it up on boot
+    #      scan with privileged permissions (privapp-permissions-audiobridge.xml).
+    #   2. AudioBridge.apk at module root — service.sh falls back to `pm install`
+    #      from here if priv-app detection didn't pick up the package (e.g. on
+    #      restrictive ROMs or when signing requirements differ).
     APK_PATH=$(find "$PROJECT_DIR/app/build/outputs/apk" -name "*.apk" 2>/dev/null | head -n 1)
     if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
         cp "$APK_PATH" "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge/AudioBridge.apk"
+        cp "$APK_PATH" "$PROJECT_DIR/zygisk/module/AudioBridge.apk"
         echo -e "${GREEN}Packaged APK: $APK_PATH${NC}"
     else
         echo -e "${RED}Warning: APK not found! Module will not be fully functional until APK is placed in zygisk/module/system/priv-app/AudioBridge/${NC}"
