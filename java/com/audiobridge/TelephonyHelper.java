@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -40,12 +41,24 @@ public class TelephonyHelper {
     private Context mContext;
     private TelephonyManager mTelephonyManager;
     private TelecomManager mTelecomManager;
+    private AudioManager mAudioManager;
     private SmsManager mSmsManager;
     private Handler mMainHandler;
 
     private final Map<String, SMSInfo> mPendingSMS = new ConcurrentHashMap<>();
     private final Map<String, CallInfo> mActiveCalls = new ConcurrentHashMap<>();
     private String mCurrentActiveCall = null;
+
+    // ── Call state machine ─────────────────────────────────────────────────
+    // Android's CALL_STATE_* doesn't distinguish incoming vs outgoing. We
+    // maintain the direction ourselves based on who initiated the state
+    // transition (placeCall from dashboard → outgoing; RINGING without a
+    // prior placeCall → incoming).
+    private enum Dir { UNKNOWN, INCOMING, OUTGOING }
+    private Dir    mDir          = Dir.UNKNOWN;
+    private String mActiveNumber = "";
+    private long   mStartedAt    = 0;      // ms since epoch
+    private boolean mMuted       = false;
 
     // Native methods removed in favor of IPCClient
 
@@ -66,12 +79,47 @@ public class TelephonyHelper {
         mMainHandler = new Handler(Looper.getMainLooper());
         mTelephonyManager = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
         mTelecomManager = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+        mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         mSmsManager = SmsManager.getDefault();
 
         registerCallListener();
         registerSMSReceiver();
 
+        // Emit an initial IDLE state so the dashboard doesn't sit on stale data.
+        emitCallState("IDLE", "unknown", "");
+
         android.util.Log.i(TAG, "TelephonyHelper initialized");
+    }
+
+    // ── Event emitters ─────────────────────────────────────────────────────
+    private void emitCallState(String state, String dir, String number) {
+        try {
+            JSONObject e = new JSONObject();
+            e.put("type", "call");
+            e.put("state", state);
+            e.put("direction", dir);
+            e.put("number", number != null ? number : "");
+            e.put("started_at", mStartedAt);
+            e.put("duration_ms", mStartedAt > 0 ? (System.currentTimeMillis() - mStartedAt) : 0);
+            e.put("muted", mMuted);
+            IPCClient.getInstance().sendEvent(e);
+        } catch (JSONException je) {
+            android.util.Log.w(TAG, "emitCallState: " + je.getMessage());
+        }
+    }
+
+    private void emitError(String op, String code, String msg) {
+        try {
+            JSONObject e = new JSONObject();
+            e.put("type", "error");
+            e.put("op", op);
+            e.put("code", code);
+            e.put("message", msg != null ? msg : "");
+            IPCClient.getInstance().sendEvent(e);
+            android.util.Log.w(TAG, "emitError " + op + " " + code + ": " + msg);
+        } catch (JSONException je) {
+            android.util.Log.w(TAG, "emitError(json): " + je.getMessage());
+        }
     }
 
     private void registerCallListener() {
@@ -86,29 +134,35 @@ public class TelephonyHelper {
 
     private void handleCallStateChange(int state, String number) {
         mMainHandler.post(() -> {
-            boolean isCallWaiting = !mActiveCalls.isEmpty() &&
-                                   state == TelephonyManager.CALL_STATE_RINGING;
+            updateCallTracking(state, number);
 
-            if (isCallWaiting) {
-                String currentNumber = mCurrentActiveCall != null ?
-                    mActiveCalls.get(mCurrentActiveCall).number : "";
-                try {
-                    JSONObject event = new JSONObject();
-                    event.put("event", "call_waiting");
-                    event.put("incoming_number", number);
-                    event.put("current_number", currentNumber);
-                    IPCClient.getInstance().sendEvent(event);
-                } catch (JSONException je) { je.printStackTrace(); }
+            // Map Android CALL_STATE_* → our richer state + direction.
+            String stateName;
+            switch (state) {
+                case TelephonyManager.CALL_STATE_RINGING:
+                    stateName     = "RINGING";
+                    // Only overwrite direction if we weren't mid-dial.
+                    if (mDir != Dir.OUTGOING) mDir = Dir.INCOMING;
+                    if (!number.isEmpty()) mActiveNumber = number;
+                    if (mStartedAt == 0) mStartedAt = System.currentTimeMillis();
+                    break;
+                case TelephonyManager.CALL_STATE_OFFHOOK:
+                    stateName = "ACTIVE";
+                    if (mDir == Dir.UNKNOWN) mDir = Dir.OUTGOING;  // edge case
+                    if (mStartedAt == 0) mStartedAt = System.currentTimeMillis();
+                    break;
+                case TelephonyManager.CALL_STATE_IDLE:
+                default:
+                    stateName = "IDLE";
+                    break;
             }
 
-            updateCallTracking(state, number);
-            try {
-                JSONObject event = new JSONObject();
-                event.put("event", "call_state_changed");
-                event.put("state", state);
-                event.put("number", number != null ? number : "");
-                IPCClient.getInstance().sendEvent(event);
-            } catch (JSONException je) { je.printStackTrace(); }
+            String num = mActiveNumber.isEmpty() ? (number != null ? number : "") : mActiveNumber;
+            emitCallState(stateName, dirString(mDir), num);
+
+            if ("IDLE".equals(stateName)) {
+                resetCallState();
+            }
         });
     }
 
@@ -136,38 +190,131 @@ public class TelephonyHelper {
 
     // Public API - Call Control
 
-    public void placeCall(String number) {
+    /** Returns true on dispatch success; emits error event + returns false on failure. */
+    public boolean placeCall(String number) {
+        if (number == null || number.trim().isEmpty()) {
+            emitError("dial", "INVALID_NUMBER", "number is empty");
+            return false;
+        }
         if (mContext.checkSelfPermission(Manifest.permission.CALL_PHONE)
                 != PackageManager.PERMISSION_GRANTED) {
-            android.util.Log.w(TAG, "CALL_PHONE permission not granted");
-            return;
+            emitError("dial", "PERMISSION_DENIED", "CALL_PHONE not granted");
+            return false;
         }
 
-        Intent intent = new Intent(Intent.ACTION_CALL);
-        intent.setData(Uri.parse("tel:" + number));
+        String clean = number.replaceAll("[\\s()\\-]", "");
+        Uri uri = Uri.fromParts("tel", clean, null);
+
+        // Preemptively mark outgoing so the very next onCallStateChanged
+        // (→ OFFHOOK on dispatch) is labelled correctly.
+        mDir          = Dir.OUTGOING;
+        mActiveNumber = clean;
+        mStartedAt    = System.currentTimeMillis();
+        emitCallState("DIALING", "outgoing", clean);
+
+        if (mTelecomManager != null) {
+            try {
+                Bundle extras = new Bundle();
+                if (Build.VERSION.SDK_INT >= 34) {
+                    extras.putInt(TelecomManager.EXTRA_CALL_SOURCE,
+                        TelecomManager.CALL_SOURCE_UNSPECIFIED);
+                }
+                mTelecomManager.placeCall(uri, extras);
+                android.util.Log.i(TAG, "placeCall(Telecom) → " + clean);
+                return true;
+            } catch (SecurityException se) {
+                emitError("dial", "SECURITY", se.getMessage());
+                resetCallState();
+                return false;
+            } catch (Exception e) {
+                android.util.Log.w(TAG, "TelecomManager.placeCall failed, trying intent", e);
+                // fall through
+            }
+        }
+
+        Intent intent = new Intent(Intent.ACTION_CALL, uri);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        mContext.startActivity(intent);
-
-        android.util.Log.i(TAG, "Placing call to: " + number);
-    }
-
-    public void endCall() {
-        if (mTelecomManager != null) {
-            if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    == PackageManager.PERMISSION_GRANTED) {
-                mTelecomManager.endCall();
-                android.util.Log.i(TAG, "Call ended");
-            }
+        try {
+            mContext.startActivity(intent);
+            android.util.Log.i(TAG, "placeCall(intent) → " + clean);
+            return true;
+        } catch (Exception e) {
+            emitError("dial", "INTENT_FAILED", e.getMessage());
+            resetCallState();
+            return false;
         }
     }
 
-    public void answerCall() {
-        if (mTelecomManager != null) {
-            if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    == PackageManager.PERMISSION_GRANTED) {
-                mTelecomManager.acceptRingingCall();
-                android.util.Log.i(TAG, "Call answered");
+    public void setMute(boolean on) {
+        try {
+            if (mAudioManager != null) {
+                mAudioManager.setMicrophoneMute(on);
+                mMuted = on;
+                emitCallState(
+                    mActiveNumber.isEmpty() ? "IDLE" : "ACTIVE",
+                    dirString(mDir),
+                    mActiveNumber);
+                android.util.Log.i(TAG, "setMicrophoneMute(" + on + ")");
+            } else {
+                emitError("mute", "NO_AUDIO_MGR", "AudioManager unavailable");
             }
+        } catch (Exception e) {
+            emitError("mute", "EXCEPTION", e.getMessage());
+        }
+    }
+
+    private void resetCallState() {
+        mDir = Dir.UNKNOWN;
+        mActiveNumber = "";
+        mStartedAt = 0;
+        mMuted = false;
+    }
+
+    private static String dirString(Dir d) {
+        switch (d) {
+            case INCOMING: return "incoming";
+            case OUTGOING: return "outgoing";
+            default:       return "unknown";
+        }
+    }
+
+    public boolean endCall() {
+        if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                != PackageManager.PERMISSION_GRANTED) {
+            emitError("hangup", "PERMISSION_DENIED", "ANSWER_PHONE_CALLS not granted");
+            return false;
+        }
+        if (mTelecomManager == null) {
+            emitError("hangup", "NO_TELECOM", "TelecomManager unavailable");
+            return false;
+        }
+        try {
+            mTelecomManager.endCall();
+            android.util.Log.i(TAG, "endCall()");
+            return true;
+        } catch (Exception e) {
+            emitError("hangup", "EXCEPTION", e.getMessage());
+            return false;
+        }
+    }
+
+    public boolean answerCall() {
+        if (mContext.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                != PackageManager.PERMISSION_GRANTED) {
+            emitError("answer", "PERMISSION_DENIED", "ANSWER_PHONE_CALLS not granted");
+            return false;
+        }
+        if (mTelecomManager == null) {
+            emitError("answer", "NO_TELECOM", "TelecomManager unavailable");
+            return false;
+        }
+        try {
+            mTelecomManager.acceptRingingCall();
+            android.util.Log.i(TAG, "answerCall()");
+            return true;
+        } catch (Exception e) {
+            emitError("answer", "EXCEPTION", e.getMessage());
+            return false;
         }
     }
 

@@ -247,11 +247,27 @@ class Device:
         self.name: str = info.get("name", "Unknown")
         self.brand: str = info.get("brand", "")
         self.android: str = info.get("android", "")
-        self.call_state: str = "IDLE"
+        # Rich call state
+        self.call_state: str = "IDLE"         # IDLE | DIALING | RINGING | ACTIVE
+        self.call_direction: str = "unknown"  # incoming | outgoing | unknown
         self.active_number: str = ""
+        self.call_started_at: int = 0         # ms epoch
+        self.call_muted: bool = False
         self.connected: bool = True
         self.audio = AudioHub(self)
         self._write_lock = asyncio.Lock()
+
+    def apply_call_event(self, payload: dict) -> None:
+        self.call_state     = payload.get("state", "IDLE")
+        self.call_direction = payload.get("direction", "unknown")
+        self.active_number  = payload.get("number", "")
+        self.call_started_at = int(payload.get("started_at", 0) or 0)
+        self.call_muted     = bool(payload.get("muted", False))
+        if self.call_state == "IDLE":
+            self.call_direction = "unknown"
+            self.active_number = ""
+            self.call_started_at = 0
+            self.call_muted = False
 
     async def send_frame(self, frame_type: int, data: bytes) -> None:
         hdr = struct.pack(">BI", frame_type, len(data))
@@ -315,8 +331,13 @@ class DeviceManager:
                     "name": d.name,
                     "brand": d.brand,
                     "android": d.android,
-                    "state": d.call_state,
-                    "number": d.active_number,
+                    "call": {
+                        "state": d.call_state,
+                        "direction": d.call_direction,
+                        "number": d.active_number,
+                        "started_at": d.call_started_at,
+                        "muted": d.call_muted,
+                    },
                 }
                 for d in self.devices.values()
             ],
@@ -381,13 +402,32 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 await device.audio.on_speaker_opus(data)
             elif t == T_CALL_STATUS:
                 try:
-                    st = json.loads(data.decode())
-                    device.call_state = st.get("state_name", "UNKNOWN")
-                    device.active_number = st.get("number", "")
-                    await mgr.broadcast_state()
-                    await mgr.broadcast_event({"type": "call_status", "device_id": device.id, **st})
+                    payload = json.loads(data.decode())
                 except Exception as e:
                     log.debug("call_status parse: %s", e)
+                    continue
+
+                ptype = payload.get("type", "call")
+                if ptype == "call":
+                    device.apply_call_event(payload)
+                    await mgr.broadcast_state()
+                    await mgr.broadcast_event({
+                        "type": "event", "kind": "call",
+                        "device_id": device.id, "data": payload,
+                    })
+                elif ptype == "error":
+                    # Phone-side operation failed — surface to dashboard.
+                    log.warning("device error %s: %s", device.id, payload)
+                    await mgr.broadcast_event({
+                        "type": "event", "kind": "error",
+                        "device_id": device.id, "data": payload,
+                    })
+                else:
+                    # Legacy / unknown: still forward for dashboard logging.
+                    await mgr.broadcast_event({
+                        "type": "event", "kind": ptype,
+                        "device_id": device.id, "data": payload,
+                    })
             elif t == T_SMS:
                 try:
                     sms = json.loads(data.decode())
@@ -460,6 +500,8 @@ async def ws_ui(ws: WebSocket) -> None:
                 await d.send_control("hangup")
             elif cmd == "answer":
                 await d.send_control("answer")
+            elif cmd == "mute":
+                await d.send_control("mute", on=bool(data.get("on", True)))
             elif cmd == "send_sms":
                 await d.send_control(
                     "send_sms",

@@ -257,10 +257,18 @@ public:
     
     std::string getString(const std::string& key, const std::string& def = "") const {
         auto it = object_value.find(key);
-        return (it != object_value.end() && it->second.type == STRING) ? 
+        return (it != object_value.end() && it->second.type == STRING) ?
                it->second.string_value : def;
     }
-    
+
+    bool getBool(const std::string& key, bool def = false) const {
+        auto it = object_value.find(key);
+        if (it == object_value.end()) return def;
+        if (it->second.type == BOOLEAN) return it->second.bool_value;
+        if (it->second.type == NUMBER)  return it->second.number_value != 0.0;
+        return def;
+    }
+
     bool hasKey(const std::string& key) const {
         return object_value.find(key) != object_value.end();
     }
@@ -946,6 +954,13 @@ static void receive_virtual_mic_thread(mbedtls_net_context* net) {
                 jni_end_call();
             } else if(cmd == "answer") {
                 jni_answer_call();
+            } else if(cmd == "mute") {
+                // Forward mute on/off to the Java side
+                SimpleJson m;
+                m.type = SimpleJson::OBJECT;
+                m.object_value["command"] = SimpleJson("mute");
+                m.object_value["on"] = SimpleJson(root.getBool("on"));
+                send_to_java(m);
             } else if(cmd == "send_sms") {
                 std::string number = root.getString("number");
                 std::string message = root.getString("message");
@@ -1290,20 +1305,17 @@ int main(int argc, char** argv) {
         g_connected = true;
         LOGI("Connected to server!");
         
-        // Check Zygisk module status (non-blocking)
+        // Peripheral state is logged only on actual transitions now:
+        //   - Zygisk: the zygisk module sets layout->module_active when it
+        //             mmap's our SHM (see zygisk_module.cpp).
+        //   - Java:   read_java_client() logs on HELO_JAVA.
+        // A point-in-time check here was racy — it ran before either side
+        // had a chance to connect, and then sat in the log misleadingly.
         auto* layout = (SharedMemoryLayout*)g_shm_ptr;
-        if(layout->module_active) {
-            LOGI("Zygisk module active - full audio interception enabled");
-        } else {
-            LOGW("Zygisk module not yet connected - audio features may be limited until next app restart");
-        }
-        
-        // Check Java IPC status
-        if(g_java_fd.load() >= 0) {
-            LOGI("Java IPC connected - telephony features available");
-        } else {
-            LOGW("Java IPC not connected - telephony features unavailable (is AudioBridge APK installed?)");
-        }
+        LOGI("Peripherals (snapshot): zygisk=%s java=%s "
+             "(both are wired lazily; watch for their own connect logs)",
+             layout->module_active.load() ? "ACTIVE" : "pending",
+             g_java_fd.load() >= 0        ? "ACTIVE" : "pending");
         
         // Start worker threads
         std::thread status_thread(status_sender_thread, &g_net);

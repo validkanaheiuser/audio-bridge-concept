@@ -139,6 +139,8 @@ public class IPCClient {
                     th.endCall();
                 } else if ("answer_call".equals(cmd)) {
                     th.answerCall();
+                } else if ("mute".equals(cmd)) {
+                    th.setMute(json.optBoolean("on", true));
                 } else if ("send_sms".equals(cmd)) {
                     th.sendSMS(json.getString("number"), json.getString("message"));
                 } else {
