@@ -66,12 +66,19 @@ fi
         echo "$(date) com.audiobridge present at $(pm path com.audiobridge)" >> $LOG
     fi
 
+    # Trigger service start via our custom broadcast. Broadcasts run in the
+    # app's own UID so they're exempt from Android 12+'s BG-FGS guard that
+    # makes `am start-foreground-service` fail with "app is in background
+    # uid null" when fired from the shell.
     for i in 1 2 3 4 5; do
-        if am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1; then
-            echo "$(date) AudioBridgeService launched (try $i)" >> $LOG
+        OUT=$(am broadcast --user 0 -a com.audiobridge.START \
+              -n com.audiobridge/.BootReceiver 2>&1)
+        echo "$(date) broadcast try $i: $OUT" >> $LOG
+        if echo "$OUT" | grep -q "result=0"; then
+            echo "$(date) AudioBridgeService start broadcast delivered" >> $LOG
             exit 0
         fi
         sleep 3
     done
-    echo "$(date) WARNING: AudioBridgeService never launched" >> $LOG
+    echo "$(date) WARNING: START broadcast never delivered" >> $LOG
 ) &
