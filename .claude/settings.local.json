@@ -4,7 +4,12 @@
       "WebSearch",
       "WebFetch(domain:android.googlesource.com)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:cs.android.com)"
+      "WebFetch(domain:cs.android.com)",
+      "Bash(curl -sL https://raw.githubusercontent.com/jmpews/Dobby/master/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.S)",
+      "Bash(curl -sL \"https://api.github.com/repos/jmpews/Dobby/contents/source/TrampolineBridge/ClosureTrampolineBridge/arm64\")",
+      "Bash(curl *)",
+      "Bash(cat)",
+      "Bash(sed -e 's/\\\\\\(adrp[[:space:]]\\\\+[^,]\\\\+,[[:space:]]*[^@[:space:]]*\\\\\\)@PAGE/\\\\1/g' -e 's/\\\\\\(add[[:space:]]\\\\+[^,]\\\\+,[[:space:]]*[^,]\\\\+,[[:space:]]*\\\\\\)\\\\\\([^@[:space:]]*\\\\\\)@PAGEOFF/\\\\1:lo12:\\\\2/g' /tmp/dobby_asm_test.s)"
     ]
   }
 }

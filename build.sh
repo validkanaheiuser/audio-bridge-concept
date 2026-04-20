@@ -324,6 +324,20 @@ build_dobby() {
     cd "$BUILD_DIR"
     if [ ! -d "Dobby" ]; then
         git clone --depth 1 https://github.com/jmpews/Dobby.git
+
+        # Patch Mach-O-only @PAGE / @PAGEOFF relocs to ELF :lo12: form.
+        # jmpews/Dobby master emits these unconditionally on arm64, which is
+        # invalid for Android/Linux assemblers and breaks clang-14 in NDK r25.
+        echo -e "${YELLOW}Patching Dobby arm64 asm for ELF relocs...${NC}"
+        local patch_stamp="$BUILD_DIR/Dobby/.elf_reloc_patched"
+        if [ ! -f "$patch_stamp" ]; then
+            find "$BUILD_DIR/Dobby" \( -name "*.asm" -o -name "*.S" \) \
+                -exec sed -i \
+                    -e 's/\(adrp[[:space:]]\+[^,]\+,[[:space:]]*[^@[:space:]]*\)@PAGE/\1/g' \
+                    -e 's/\(add[[:space:]]\+[^,]\+,[[:space:]]*[^,]\+,[[:space:]]*\)\([^@[:space:]]*\)@PAGEOFF/\1:lo12:\2/g' \
+                    {} +
+            touch "$patch_stamp"
+        fi
     fi
 
     mkdir -p "$BUILD_DIR/dobby-build-$ABI"
@@ -333,12 +347,24 @@ build_dobby() {
         -DANDROID_ABI=$ABI \
         -DANDROID_PLATFORM=android-$API_LEVEL \
         -DCMAKE_BUILD_TYPE=Release \
-        -DDOBBY_GENERATE_SHARED=OFF \
-        -DDOBBY_DEBUG=OFF
+        -DDOBBY_DEBUG=OFF \
+        -DBUILD_SHARED_LIBS=OFF
     cmake --build . -j$(nproc) --target dobby
 
     mkdir -p "$LIBS_DIR/$ABI/include/dobby"
-    cp libdobby.a "$LIBS_DIR/$ABI/"
+    # dobby may build as libdobby.a or libdobby.so depending on flags — grab .a
+    if [ -f libdobby.a ]; then
+        cp libdobby.a "$LIBS_DIR/$ABI/"
+    elif [ -f libdobby.so ]; then
+        # Some Dobby revisions ignore BUILD_SHARED_LIBS; repackage .so objects
+        echo -e "${YELLOW}Dobby built shared — extracting to static archive${NC}"
+        mkdir -p "$BUILD_DIR/dobby-extract-$ABI"
+        (cd "$BUILD_DIR/dobby-extract-$ABI" && \
+            "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+                rcs libdobby.a ../dobby-build-$ABI/CMakeFiles/dobby.dir/**/*.o 2>/dev/null || true)
+        cp "$BUILD_DIR/dobby-extract-$ABI/libdobby.a" "$LIBS_DIR/$ABI/" 2>/dev/null \
+            || cp libdobby.so "$LIBS_DIR/$ABI/"
+    fi
     cp "$BUILD_DIR/Dobby/include/dobby.h" "$LIBS_DIR/$ABI/include/dobby/"
     echo -e "${GREEN}Dobby built for $ABI${NC}"
 }
