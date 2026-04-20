@@ -66,32 +66,43 @@ fi
     done
     sleep 3
 
-    # Fallback install: if priv-app overlay didn't register com.audiobridge
-    # (e.g. signing mismatch on restrictive ROMs), pm install from MODDIR.
-    if ! pm path com.audiobridge >/dev/null 2>&1; then
-        if [ -f "$MODDIR/AudioBridge.apk" ]; then
-            echo "$(date) com.audiobridge not registered as priv-app; pm install fallback" >> $LOG
+    # Decide how to install the APK.
+    # Some ROMs (Samsung One UI, certain KernelSU kernels) fail to resolve
+    # Resources when the APK is loaded from a systemless /system/priv-app
+    # overlay — the app crashes in handleBindApplication with a Resources
+    # null-deref before any component runs. We detect this by checking
+    # /data/dalvik-cache or recent crashes for com.audiobridge; if the app is
+    # advertised as priv-app but crashing, we force a real pm install.
+    APK_STATE=$(pm path com.audiobridge 2>/dev/null)
+    RECENT_CRASH=$(dumpsys dropbox --print 2>/dev/null | grep -c "Process: com.audiobridge")
+
+    if [ -z "$APK_STATE" ]; then
+        echo "$(date) com.audiobridge not registered; pm install from MODDIR" >> $LOG
+        [ -f "$MODDIR/AudioBridge.apk" ] && \
             pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
-        else
-            echo "$(date) WARNING: AudioBridge.apk missing from module" >> $LOG
+    elif echo "$APK_STATE" | grep -q "/system/priv-app/" && [ "$RECENT_CRASH" -gt 2 ]; then
+        # priv-app path but crashing — fall back to data-app install.
+        echo "$(date) priv-app path is crashing ($RECENT_CRASH hits); pm install override" >> $LOG
+        if [ -f "$MODDIR/AudioBridge.apk" ]; then
+            pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
         fi
     else
-        echo "$(date) com.audiobridge present at $(pm path com.audiobridge)" >> $LOG
+        echo "$(date) com.audiobridge present at $APK_STATE" >> $LOG
     fi
 
-    # Trigger service start via our custom broadcast. Broadcasts run in the
-    # app's own UID so they're exempt from Android 12+'s BG-FGS guard that
-    # makes `am start-foreground-service` fail with "app is in background
-    # uid null" when fired from the shell.
+    # Start the FGS via our headless LauncherActivity. Activities started by
+    # `am start` count as foreground, so startForegroundService() in the
+    # activity's onCreate is exempt from the Android 12+ BG-FGS restriction
+    # (ForegroundServiceStartNotAllowedException / mAllowStartForeground=false)
+    # that makes both `am startservice` and broadcast receivers fail.
     for i in 1 2 3 4 5; do
-        OUT=$(am broadcast --user 0 -a com.audiobridge.START \
-              -n com.audiobridge/.BootReceiver 2>&1)
-        echo "$(date) broadcast try $i: $OUT" >> $LOG
-        if echo "$OUT" | grep -q "result=0"; then
-            echo "$(date) AudioBridgeService start broadcast delivered" >> $LOG
+        OUT=$(am start --user 0 -n com.audiobridge/.LauncherActivity 2>&1)
+        echo "$(date) launcher try $i: $OUT" >> $LOG
+        if echo "$OUT" | grep -qE "Starting:|Status: ok"; then
+            echo "$(date) AudioBridgeService launch requested" >> $LOG
             exit 0
         fi
         sleep 3
     done
-    echo "$(date) WARNING: START broadcast never delivered" >> $LOG
+    echo "$(date) WARNING: LauncherActivity never started" >> $LOG
 ) &

@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Default configuration fallback
     let config = {
-        HOST: "192.168.1.100",
+        HOST: "192.168.2.153",
         PORT: "59100",
         TOKEN: "default_secure_token_123"
     };

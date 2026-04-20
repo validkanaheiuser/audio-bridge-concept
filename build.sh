@@ -191,6 +191,7 @@ build_apk() {
     cp java/com/audiobridge/AudioBridgeService.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/IPCClient.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/BootReceiver.java app/src/main/java/com/audiobridge/
+    cp java/com/audiobridge/LauncherActivity.java app/src/main/java/com/audiobridge/
     
     # Create AndroidManifest.xml
     cat > app/src/main/AndroidManifest.xml << 'EOF'
@@ -219,6 +220,20 @@ build_apk() {
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:localeConfig="@xml/locales_config">
+
+        <activity
+            android:name=".LauncherActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:finishOnTaskLaunch="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
 
         <service
             android:name=".AudioBridgeService"
@@ -568,36 +583,42 @@ fi
     done
     sleep 3
 
-    # Fallback install: if priv-app overlay didn't register com.audiobridge
-    # (e.g. signing mismatch on restrictive ROMs), pm install from MODDIR.
-    if ! pm path com.audiobridge >/dev/null 2>&1; then
-        if [ -f "$MODDIR/AudioBridge.apk" ]; then
-            echo "$(date) com.audiobridge not registered as priv-app; pm install fallback" >> $LOG
+    # Detect the broken priv-app-overlay scenario (Resources null-deref
+    # during handleBindApplication on some ROMs) and force pm install when
+    # the priv-app copy is confirmed crashing.
+    APK_STATE=$(pm path com.audiobridge 2>/dev/null)
+    RECENT_CRASH=$(dumpsys dropbox --print 2>/dev/null | grep -c "Process: com.audiobridge")
+
+    if [ -z "$APK_STATE" ]; then
+        echo "$(date) com.audiobridge not registered; pm install from MODDIR" >> $LOG
+        [ -f "$MODDIR/AudioBridge.apk" ] && \
             pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
-        else
-            echo "$(date) WARNING: AudioBridge.apk missing from module" >> $LOG
+    elif echo "$APK_STATE" | grep -q "/system/priv-app/" && [ "$RECENT_CRASH" -gt 2 ]; then
+        echo "$(date) priv-app path is crashing ($RECENT_CRASH hits); pm install override" >> $LOG
+        if [ -f "$MODDIR/AudioBridge.apk" ]; then
+            pm install -r -g "$MODDIR/AudioBridge.apk" >> $LOG 2>&1
         fi
     else
-        echo "$(date) com.audiobridge present at $(pm path com.audiobridge)" >> $LOG
+        echo "$(date) com.audiobridge present at $APK_STATE" >> $LOG
     fi
 
     # Start the foreground service — retry because activity may still be
     # registering a beat after boot_completed on some devices.
-    # Trigger service start via our custom broadcast. Broadcasts run in the
-    # app's own UID so they're exempt from Android 12+'s BG-FGS guard that
-    # makes `am start-foreground-service` fail with "app is in background
-    # uid null" when fired from the shell.
+    # Start the FGS via the headless LauncherActivity. Activities started by
+    # `am start` count as foreground, so startForegroundService() in their
+    # onCreate is exempt from Android 12+'s BG-FGS guard
+    # (ForegroundServiceStartNotAllowedException / mAllowStartForeground=false)
+    # that blocks both `am startservice` and custom-broadcast receivers.
     for i in 1 2 3 4 5; do
-        OUT=$(am broadcast --user 0 -a com.audiobridge.START \
-              -n com.audiobridge/.BootReceiver 2>&1)
-        echo "$(date) broadcast try $i: $OUT" >> $LOG
-        if echo "$OUT" | grep -q "result=0"; then
-            echo "$(date) AudioBridgeService start broadcast delivered" >> $LOG
+        OUT=$(am start --user 0 -n com.audiobridge/.LauncherActivity 2>&1)
+        echo "$(date) launcher try $i: $OUT" >> $LOG
+        if echo "$OUT" | grep -qE "Starting:|Status: ok"; then
+            echo "$(date) AudioBridgeService launch requested" >> $LOG
             exit 0
         fi
         sleep 3
     done
-    echo "$(date) WARNING: START broadcast never delivered" >> $LOG
+    echo "$(date) WARNING: LauncherActivity never started" >> $LOG
 ) &
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/service.sh"
@@ -609,7 +630,53 @@ EOF
 MODDIR=${0%/*}
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/post-fs-data.sh"
-    
+
+    # uninstall.sh runs when the user removes the module via Magisk/KernelSU
+    # Manager. Runs with the module still mounted, so we can see $MODDIR.
+    # Responsibilities:
+    #   1. Uninstall the data-app copy (priv-app overlay cleans itself when
+    #      the module is unmounted; pm install persists unless we remove it).
+    #   2. Kill the daemon so the user doesn't need to reboot.
+    #   3. Clean up /data/local/tmp diagnostic files.
+    cat > "$PROJECT_DIR/zygisk/module/uninstall.sh" << 'EOF'
+#!/system/bin/sh
+LOG=/data/local/tmp/audio_bridge_uninstall.log
+echo "$(date) uninstall.sh started" >> $LOG
+
+# Stop the running daemon
+if pidof audio-bridge >/dev/null 2>&1; then
+    PID=$(pidof audio-bridge)
+    kill $PID 2>/dev/null
+    sleep 1
+    kill -9 $PID 2>/dev/null
+    echo "$(date) daemon killed (was PID $PID)" >> $LOG
+fi
+
+# Stop the foreground service + remove the app if it was installed via
+# pm install fallback (priv-app overlay clean-up is automatic on next boot,
+# but the data-app copy is persistent).
+am stopservice --user 0 -n com.audiobridge/.AudioBridgeService 2>&1 >> $LOG
+APK_PATH=$(pm path com.audiobridge 2>/dev/null)
+if echo "$APK_PATH" | grep -q "/data/app/"; then
+    pm uninstall --user 0 com.audiobridge >> $LOG 2>&1
+    echo "$(date) pm uninstall com.audiobridge (was $APK_PATH)" >> $LOG
+else
+    echo "$(date) priv-app copy at $APK_PATH — will be removed by overlay unmount" >> $LOG
+fi
+
+# Clean diagnostic/runtime files
+rm -f /data/local/tmp/audio_bridge.log \
+      /data/local/tmp/audio_bridge_java.log \
+      /data/local/tmp/audio_bridge_service.log \
+      /data/local/tmp/audio_bridge.sock \
+      /data/local/tmp/audio_bridge.pid \
+      /data/local/tmp/audio_bridge.conf \
+      /data/local/tmp/audio_bridge_id
+
+echo "$(date) uninstall.sh complete" >> $LOG
+EOF
+    chmod +x "$PROJECT_DIR/zygisk/module/uninstall.sh"
+
     echo -e "${GREEN}Zygisk module built${NC}"
 }
 
