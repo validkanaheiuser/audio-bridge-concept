@@ -268,16 +268,28 @@ android.nonTransitiveRClass=true
 org.gradle.jvmargs=-Xmx2048m
 EOF
 
-    # Build APK using gradle
-    cat > app/build.gradle << 'EOF'
+    # Generate a release keystore if none exists. Without this, gradle emits
+    # an unsigned APK and Android rejects it with INSTALL_PARSE_FAILED_NO_CERTIFICATES.
+    # Override with env var AUDIO_BRIDGE_KEYSTORE to use your own signing key.
+    local KEYSTORE_PATH="${AUDIO_BRIDGE_KEYSTORE:-$PROJECT_DIR/app/audiobridge.keystore}"
+    local KEYSTORE_PASS="${AUDIO_BRIDGE_KEYSTORE_PASS:-audiobridge}"
+    local KEYSTORE_ALIAS="${AUDIO_BRIDGE_KEYSTORE_ALIAS:-audiobridge}"
+    if [ ! -f "$KEYSTORE_PATH" ]; then
+        echo -e "${YELLOW}Generating signing keystore: $KEYSTORE_PATH${NC}"
+        keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE_PATH" \
+            -alias "$KEYSTORE_ALIAS" \
+            -storepass "$KEYSTORE_PASS" \
+            -keypass "$KEYSTORE_PASS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=AudioBridge, O=AudioBridge, C=US" \
+        || echo -e "${RED}keytool failed — ensure Java JDK is installed${NC}"
+    fi
+
+    cat > app/build.gradle << EOF
 buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.0'
-    }
+    repositories { google(); mavenCentral() }
+    dependencies { classpath 'com.android.tools.build:gradle:8.1.0' }
 }
 
 apply plugin: 'com.android.application'
@@ -285,7 +297,7 @@ apply plugin: 'com.android.application'
 android {
     namespace 'com.audiobridge'
     compileSdk 34
-    
+
     defaultConfig {
         applicationId "com.audiobridge"
         minSdk 28
@@ -293,27 +305,37 @@ android {
         versionCode 1
         versionName "1.0"
     }
-    
+
+    signingConfigs {
+        release {
+            storeFile file("${KEYSTORE_PATH}")
+            storePassword "${KEYSTORE_PASS}"
+            keyAlias "${KEYSTORE_ALIAS}"
+            keyPassword "${KEYSTORE_PASS}"
+            // Enable both v1 (JAR) and v2+ (APK Signature Scheme) so the APK
+            // is accepted on the full min/target SDK range.
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
         }
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
 }
 
-repositories {
-    google()
-    mavenCentral()
-}
+repositories { google(); mavenCentral() }
 EOF
 
-    echo -e "${GREEN}APK source prepared${NC}"
-    echo -e "${YELLOW}Build APK using Android Studio or ./gradlew assembleRelease${NC}"
+    echo -e "${GREEN}APK source prepared (signing via $KEYSTORE_PATH)${NC}"
 }
 
 # Fetch shadowhook from Maven Central. The AAR bundles prebuilt libshadowhook.so
