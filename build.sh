@@ -196,8 +196,7 @@ build_apk() {
     # Create AndroidManifest.xml
     cat > app/src/main/AndroidManifest.xml << 'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.audiobridge">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
@@ -309,6 +308,7 @@ EOF
     cat > app/gradle.properties << 'EOF'
 android.useAndroidX=true
 android.nonTransitiveRClass=true
+android.suppressUnsupportedCompileSdk=34
 org.gradle.jvmargs=-Xmx2048m
 EOF
 
@@ -333,7 +333,10 @@ EOF
     cat > app/build.gradle << EOF
 buildscript {
     repositories { google(); mavenCentral() }
-    dependencies { classpath 'com.android.tools.build:gradle:8.1.0' }
+    // AGP 8.2.2 is the first release with first-class compileSdk=34 support.
+    // Older AGPs compile 34 but ship an older android.jar, so API-34-only
+    // constants (e.g. TelecomManager.EXTRA_CALL_SOURCE) resolve as missing.
+    dependencies { classpath 'com.android.tools.build:gradle:8.2.2' }
 }
 
 apply plugin: 'com.android.application'

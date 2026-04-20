@@ -214,12 +214,9 @@ public class TelephonyHelper {
 
         if (mTelecomManager != null) {
             try {
-                Bundle extras = new Bundle();
-                if (Build.VERSION.SDK_INT >= 34) {
-                    extras.putInt(TelecomManager.EXTRA_CALL_SOURCE,
-                        TelecomManager.CALL_SOURCE_UNSPECIFIED);
-                }
-                mTelecomManager.placeCall(uri, extras);
+                // EXTRA_CALL_SOURCE is API 34 analytics attribution; not
+                // functionally required and not exposed by older AGPs. Omitted.
+                mTelecomManager.placeCall(uri, new Bundle());
                 android.util.Log.i(TAG, "placeCall(Telecom) → " + clean);
                 return true;
             } catch (SecurityException se) {
