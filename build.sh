@@ -256,6 +256,18 @@ pluginManagement {
 rootProject.name = "AudioBridge"
 EOF
 
+    # local.properties: required so gradle can locate the Android SDK
+    cat > app/local.properties << EOF
+sdk.dir=${ANDROID_HOME}
+EOF
+
+    # gradle.properties: defaults for headless builds
+    cat > app/gradle.properties << 'EOF'
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+org.gradle.jvmargs=-Xmx2048m
+EOF
+
     # Build APK using gradle
     cat > app/build.gradle << 'EOF'
 buildscript {
@@ -304,25 +316,57 @@ EOF
     echo -e "${YELLOW}Build APK using Android Studio or ./gradlew assembleRelease${NC}"
 }
 
+# Build Dobby inline-hook as a static library for arm64
+build_dobby() {
+    local ABI=arm64-v8a
+    echo -e "${YELLOW}Building Dobby (inline hook) for $ABI...${NC}"
+
+    cd "$BUILD_DIR"
+    if [ ! -d "Dobby" ]; then
+        git clone --depth 1 https://github.com/jmpews/Dobby.git
+    fi
+
+    mkdir -p "$BUILD_DIR/dobby-build-$ABI"
+    cd "$BUILD_DIR/dobby-build-$ABI"
+    cmake "$BUILD_DIR/Dobby" \
+        -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+        -DANDROID_ABI=$ABI \
+        -DANDROID_PLATFORM=android-$API_LEVEL \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DDOBBY_GENERATE_SHARED=OFF \
+        -DDOBBY_DEBUG=OFF
+    cmake --build . -j$(nproc) --target dobby
+
+    mkdir -p "$LIBS_DIR/$ABI/include/dobby"
+    cp libdobby.a "$LIBS_DIR/$ABI/"
+    cp "$BUILD_DIR/Dobby/include/dobby.h" "$LIBS_DIR/$ABI/include/dobby/"
+    echo -e "${GREEN}Dobby built for $ABI${NC}"
+}
+
 # Build Zygisk module
 build_zygisk() {
     echo -e "${YELLOW}Building Zygisk module...${NC}"
-    
+
+    # Ensure Dobby is available
+    if [ ! -f "$LIBS_DIR/arm64-v8a/libdobby.a" ]; then
+        build_dobby
+    fi
+
     cd "$PROJECT_DIR/zygisk"
-    
+
     local TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
     export CC="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang"
     export CXX="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++"
-    
+
     # Download Zygisk headers if needed
     if [ ! -f "zygisk.hpp" ]; then
         curl -L -o zygisk.hpp https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
     fi
-    
+
     mkdir -p "$PROJECT_DIR/zygisk/module"
     mkdir -p "$PROJECT_DIR/zygisk/module/zygisk"
-    
-    # Compile Zygisk module
+
+    # Compile Zygisk module (links Dobby statically for inline hooking)
     $CXX \
         -std=c++17 \
         -O3 \
@@ -330,8 +374,13 @@ build_zygisk() {
         -shared \
         -DANDROID \
         -I"$PROJECT_DIR/zygisk" \
+        -I"$LIBS_DIR/arm64-v8a/include" \
+        -I"$LIBS_DIR/arm64-v8a/include/dobby" \
         src/zygisk_module.cpp \
         -o "$PROJECT_DIR/zygisk/module/zygisk/arm64-v8a.so" \
+        -L"$LIBS_DIR/arm64-v8a" \
+        -Wl,--whole-archive -ldobby -Wl,--no-whole-archive \
+        -Wl,--gc-sections \
         -llog
     
     # Package into Magisk Module
@@ -371,10 +420,13 @@ ui_print "- Installing Audio Bridge"
 ui_print "- Android 14 Compatible"
 EOF
 
-    # Create sepolicy.rule to allow com.android.phone (radio) to connect to daemon's unix socket
+    # Create sepolicy.rule to allow various app domains to connect to daemon's unix socket
     cat > "$PROJECT_DIR/zygisk/module/sepolicy.rule" << 'EOF'
-allow radio su unix_stream_socket connectto
-allow radio magisk unix_stream_socket connectto
+allow radio su unix_stream_socket { connectto read write getattr }
+allow radio magisk unix_stream_socket { connectto read write getattr }
+allow platform_app su unix_stream_socket { connectto read write getattr }
+allow priv_app su unix_stream_socket { connectto read write getattr }
+allow system_app su unix_stream_socket { connectto read write getattr }
 EOF
 
     # Create service.sh (runs during late_start - safe, non-blocking)
@@ -394,9 +446,22 @@ pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
+# Apply SELinux rules dynamically (supports Magisk, KernelSU, and supolicy)
+# Allow phone process (radio) and the audiobridge app to use abstract unix sockets
+for TOOL in magiskpolicy supolicy /data/adb/ksud; do
+    if command -v $TOOL >/dev/null 2>&1 || [ -f "$TOOL" ]; then
+        $TOOL --live "allow radio su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow radio magisk unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow platform_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow priv_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow system_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        echo "$(date) SELinux rules applied via $TOOL" >> $LOG
+        break
+    fi
+done
+
 # Start daemon if not running
-# Use /system/bin/ path (mounted overlay) for correct SELinux context
-if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid 2>/dev/null) 2>/dev/null; then
+if ! pidof audio-bridge >/dev/null 2>&1; then
     echo "$(date) Starting audio bridge daemon" >> $LOG
     if [ -f /system/bin/audio-bridge ]; then
         /system/bin/audio-bridge --daemon >> $LOG 2>&1 &
@@ -406,12 +471,18 @@ if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/
         $MODDIR/system/bin/audio-bridge --daemon >> $LOG 2>&1 &
     fi
     sleep 3
-    if [ -f /data/local/tmp/audio_bridge.pid ]; then
-        echo "$(date) Daemon started, PID: $(cat /data/local/tmp/audio_bridge.pid)" >> $LOG
+    if pidof audio-bridge >/dev/null 2>&1; then
+        echo "$(date) Daemon started, PID: $(pidof audio-bridge)" >> $LOG
     else
         echo "$(date) WARNING: Daemon failed to start" >> $LOG
     fi
+else
+    echo "$(date) Daemon already running, PID: $(pidof audio-bridge)" >> $LOG
 fi
+
+# Start AudioBridge Java service (handles SMS/calls via IPC)
+am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1
+echo "$(date) AudioBridgeService launch requested" >> $LOG
 EOF
     chmod +x "$PROJECT_DIR/zygisk/module/service.sh"
 
@@ -443,14 +514,23 @@ main() {
     # Prepare APK sources
     build_apk
     
-    # Try to build APK if gradle is available
+    # Try to build APK if gradle is available. Generate a wrapper once so
+    # subsequent builds are self-contained.
     echo -e "${YELLOW}Attempting to build APK using gradle...${NC}"
-    if command -v gradle >/dev/null 2>&1; then
-        cd "$PROJECT_DIR/app" && gradle assembleRelease || echo "Gradle build failed"
-    elif [ -f "$PROJECT_DIR/app/gradlew" ]; then
-        cd "$PROJECT_DIR/app" && chmod +x gradlew && ./gradlew assembleRelease || echo "Gradlew build failed"
+    if [ ! -f "$PROJECT_DIR/app/gradlew" ] && command -v gradle >/dev/null 2>&1; then
+        echo -e "${YELLOW}Generating gradle wrapper...${NC}"
+        ( cd "$PROJECT_DIR/app" && gradle wrapper --gradle-version 8.4 ) || \
+            echo -e "${RED}Failed to generate gradle wrapper${NC}"
+    fi
+
+    if [ -f "$PROJECT_DIR/app/gradlew" ]; then
+        ( cd "$PROJECT_DIR/app" && chmod +x gradlew && ./gradlew assembleRelease --no-daemon ) || \
+            echo -e "${RED}Gradlew build failed${NC}"
+    elif command -v gradle >/dev/null 2>&1; then
+        ( cd "$PROJECT_DIR/app" && gradle assembleRelease --no-daemon ) || \
+            echo -e "${RED}Gradle build failed${NC}"
     else
-        echo -e "${RED}Gradle not found. Please build the APK manually in the 'app' directory, then re-run this script.${NC}"
+        echo -e "${RED}Gradle not found. Install gradle (>=8) and re-run, or open app/ in Android Studio.${NC}"
     fi
     cd "$PROJECT_DIR"
     
@@ -458,9 +538,10 @@ main() {
     build_zygisk
     
     # Package APK and binary into module
-    APK_PATH=$(find "$PROJECT_DIR/app/build/outputs/apk/release" -name "*.apk" | head -n 1)
+    APK_PATH=$(find "$PROJECT_DIR/app/build/outputs/apk" -name "*.apk" 2>/dev/null | head -n 1)
     if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
         cp "$APK_PATH" "$PROJECT_DIR/zygisk/module/system/priv-app/AudioBridge/AudioBridge.apk"
+        echo -e "${GREEN}Packaged APK: $APK_PATH${NC}"
     else
         echo -e "${RED}Warning: APK not found! Module will not be fully functional until APK is placed in zygisk/module/system/priv-app/AudioBridge/${NC}"
     fi

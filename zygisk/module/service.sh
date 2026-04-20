@@ -1,7 +1,4 @@
 #!/system/bin/sh
-# Audio Bridge - service.sh
-# Runs during late_start service mode (safe, non-blocking)
-
 MODDIR=${0%/*}
 LOG=/data/local/tmp/audio_bridge_service.log
 
@@ -16,22 +13,38 @@ pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
 
+# Apply SELinux rules dynamically (Magisk, KernelSU, supolicy)
+for TOOL in magiskpolicy supolicy /data/adb/ksud; do
+    if command -v $TOOL >/dev/null 2>&1 || [ -f "$TOOL" ]; then
+        $TOOL --live "allow radio su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow radio magisk unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow platform_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow priv_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        $TOOL --live "allow system_app su unix_stream_socket { connectto read write }" 2>/dev/null
+        echo "$(date) SELinux rules applied via $TOOL" >> $LOG
+        break
+    fi
+done
+
 # Start daemon if not running
-# Use /system/bin/ path (mounted overlay) for correct SELinux context
-# Fallback to $MODDIR path if overlay not available
-if [ ! -f /data/local/tmp/audio_bridge.pid ] || ! kill -0 $(cat /data/local/tmp/audio_bridge.pid 2>/dev/null) 2>/dev/null; then
+if ! pidof audio-bridge >/dev/null 2>&1; then
     echo "$(date) Starting audio bridge daemon" >> $LOG
     if [ -f /system/bin/audio-bridge ]; then
         /system/bin/audio-bridge --daemon >> $LOG 2>&1 &
     else
-        echo "$(date) /system/bin/audio-bridge not found, trying MODDIR" >> $LOG
         chmod 755 $MODDIR/system/bin/audio-bridge 2>/dev/null
         $MODDIR/system/bin/audio-bridge --daemon >> $LOG 2>&1 &
     fi
     sleep 3
-    if [ -f /data/local/tmp/audio_bridge.pid ]; then
-        echo "$(date) Daemon started, PID: $(cat /data/local/tmp/audio_bridge.pid)" >> $LOG
+    if pidof audio-bridge >/dev/null 2>&1; then
+        echo "$(date) Daemon started, PID: $(pidof audio-bridge)" >> $LOG
     else
         echo "$(date) WARNING: Daemon failed to start" >> $LOG
     fi
+else
+    echo "$(date) Daemon already running, PID: $(pidof audio-bridge)" >> $LOG
 fi
+
+# Start AudioBridge Java service
+am startservice --user 0 -n com.audiobridge/.AudioBridgeService >> $LOG 2>&1
+echo "$(date) AudioBridgeService launch requested" >> $LOG

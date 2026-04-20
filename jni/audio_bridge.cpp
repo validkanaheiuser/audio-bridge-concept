@@ -1249,18 +1249,19 @@ int main(int argc, char** argv) {
         g_connected = true;
         LOGI("Connected to server!");
         
-        // Wait for Zygisk module
+        // Check Zygisk module status (non-blocking)
         auto* layout = (SharedMemoryLayout*)g_shm_ptr;
-        int wait_count = 0;
-        while(!layout->module_active && g_running && wait_count < 50) {
-            usleep(100000);
-            wait_count++;
-        }
-        
         if(layout->module_active) {
             LOGI("Zygisk module active - full audio interception enabled");
         } else {
-            LOGW("Zygisk module not detected - audio features limited");
+            LOGW("Zygisk module not yet connected - audio features may be limited until next app restart");
+        }
+        
+        // Check Java IPC status
+        if(g_java_fd.load() >= 0) {
+            LOGI("Java IPC connected - telephony features available");
+        } else {
+            LOGW("Java IPC not connected - telephony features unavailable (is AudioBridge APK installed?)");
         }
         
         // Start worker threads
@@ -1268,14 +1269,28 @@ int main(int argc, char** argv) {
         std::thread speaker_thread(capture_speaker_thread, &g_net);
         std::thread mic_thread(receive_virtual_mic_thread, &g_net);
         
+        // Connection watchdog: periodically send ping to detect dead connections
+        while(g_running && g_connected) {
+            sleep(10);
+            if(!g_connected) break;
+            
+            // Send a ping frame to check if connection is alive
+            if(!send_frame(&g_net, T_PING, nullptr, 0)) {
+                LOGW("Connection watchdog: ping failed, server appears to be down");
+                g_connected = false;
+                g_status_cv.notify_all();
+                break;
+            }
+        }
+        
         status_thread.join();
         speaker_thread.join();
         mic_thread.join();
         
         tcp_cleanup();
         g_connected = false;
-        LOGI("Disconnected, reconnecting in 15s");
-        sleep(15);
+        LOGI("Disconnected, reconnecting in 5s");
+        sleep(5);
     }
     
     unix_thread.join();

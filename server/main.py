@@ -1,486 +1,561 @@
+"""
+Audio Bridge Server v4.0
+
+Wire protocol with the phone daemon (port 59100, unchanged):
+    newline-terminated JSON handshake + HMAC-SHA256
+    binary frames: [1B type][4B len BE][data]
+    types: 1=SPEAKER opus (phone→server), 2=VIRTUAL_MIC opus (server→phone),
+           3=CONTROL json, 4=CALL_STATUS json, 5=SMS json, 6=PING, 7=PONG
+
+HTTP/WS endpoints (port 8000):
+    GET  /                               dashboard
+    WS   /ws/ui                          control + state events
+    WS   /ws/audio/{device_id}           PCM audio, binary frames
+        ?rate=<int>   default 48000      client's native sample rate
+        ?dir=<listen|speak|both>         default both
+
+Audio is negotiated in s16 mono PCM at the client's requested rate. Opus
+encode/decode happens in-process at 48kHz (the daemon's fixed native rate);
+streaming soxr handles the conversion between 48kHz and the browser's rate.
+"""
+
 import asyncio
-import ssl
+import hashlib
+import hmac
 import json
-import struct
 import logging
 import os
+import struct
+import time
 from contextlib import asynccontextmanager
-from typing import Dict, Optional, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import Dict, Optional, Set, Tuple
+
 import uvicorn
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("AudioBridgeServer")
+# Optional deps: server degrades gracefully without them.
+try:
+    import opuslib
+    HAS_OPUS = True
+except Exception:
+    opuslib = None
+    HAS_OPUS = False
 
-# Protocol Constants
-T_SPEAKER = 0x01
-T_VIRTUAL_MIC = 0x02
-T_CONTROL = 0x03
-T_CALL_STATUS = 0x04
-T_SMS = 0x05
-T_PING = 0x06
-T_PONG = 0x07
+try:
+    import soxr
+    HAS_SOXR = True
+except Exception:
+    soxr = None
+    HAS_SOXR = False
 
-AUTH_TOKEN = "default_secure_token_123"
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except Exception:
+    np = None
+    HAS_NUMPY = False
 
-@asynccontextmanager
-async def lifespan(a):
-    asyncio.create_task(start_tcp_server())
-    yield
 
-app = FastAPI(title="Audio Bridge Server", lifespan=lifespan)
+log = logging.getLogger("audio-bridge")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 
+# ─── Protocol constants ──────────────────────────────────────────────────────
+T_SPEAKER, T_VIRTUAL_MIC, T_CONTROL, T_CALL_STATUS, T_SMS, T_PING, T_PONG = range(1, 8)
+
+AUTH_TOKEN = os.environ.get("AUDIO_BRIDGE_TOKEN", "default_secure_token_123")
+TCP_PORT = int(os.environ.get("AUDIO_BRIDGE_TCP_PORT", "59100"))
+HTTP_PORT = int(os.environ.get("AUDIO_BRIDGE_HTTP_PORT", "8000"))
+
+NATIVE_RATE = 48000
+FRAME_MS = 20
+FRAME_SAMPLES = NATIVE_RATE * FRAME_MS // 1000     # 960
+FRAME_BYTES = FRAME_SAMPLES * 2                    # 1920 bytes = 20ms @ 48k mono s16
+
+
+# ─── Opus codec ──────────────────────────────────────────────────────────────
+class OpusCodec:
+    """Wraps opuslib encoder/decoder. No-ops if opuslib is missing."""
+
+    def __init__(self, bitrate: int = 32000):
+        self.enc = None
+        self.dec = None
+        if not HAS_OPUS:
+            return
+        self.enc = opuslib.Encoder(NATIVE_RATE, 1, opuslib.APPLICATION_VOIP)
+        # opuslib uses properties, not ctl macros
+        self.enc.bitrate = bitrate
+        try:
+            self.enc.inband_fec = True
+            self.enc.packet_loss_perc = 10
+            self.enc.complexity = 10
+        except Exception:
+            pass
+        self.dec = opuslib.Decoder(NATIVE_RATE, 1)
+
+    def decode(self, pkt: bytes) -> bytes:
+        """Opus packet → 48kHz s16 mono PCM (one 20ms frame)."""
+        if not self.dec or not pkt:
+            return b""
+        try:
+            return self.dec.decode(pkt, FRAME_SAMPLES, decode_fec=False)
+        except Exception as e:
+            log.debug("opus decode: %s", e)
+            # Loss concealment
+            try:
+                return self.dec.decode(b"", FRAME_SAMPLES, decode_fec=False)
+            except Exception:
+                return b"\x00" * FRAME_BYTES
+
+    def encode(self, pcm: bytes) -> bytes:
+        """48kHz s16 mono PCM (exactly one 20ms frame) → Opus packet."""
+        if not self.enc or len(pcm) < FRAME_BYTES:
+            return b""
+        try:
+            return self.enc.encode(pcm[:FRAME_BYTES], FRAME_SAMPLES)
+        except Exception as e:
+            log.debug("opus encode: %s", e)
+            return b""
+
+
+# ─── Streaming sample rate converter ─────────────────────────────────────────
+class Resampler:
+    """Stateful SRC via soxr. Pass-through when rates match or soxr is missing."""
+
+    def __init__(self, in_rate: int, out_rate: int):
+        self.in_rate = in_rate
+        self.out_rate = out_rate
+        self._stream = None
+        if in_rate == out_rate:
+            return
+        if not (HAS_SOXR and HAS_NUMPY):
+            log.warning("soxr/numpy missing; SRC %d→%d disabled", in_rate, out_rate)
+            return
+        # 'HQ' preset is the right balance for VoIP: ~90dB stopband, modest CPU.
+        self._stream = soxr.ResampleStream(
+            in_rate, out_rate, 1, dtype="int16", quality="HQ"
+        )
+
+    def process(self, pcm: bytes, last: bool = False) -> bytes:
+        if self._stream is None:
+            return pcm
+        arr = np.frombuffer(pcm, dtype=np.int16)
+        out = self._stream.resample_chunk(arr, last=last)
+        return out.tobytes()
+
+
+# ─── Audio hub per device ────────────────────────────────────────────────────
+class UIListener:
+    """One browser connection listening to the phone's speaker stream."""
+
+    def __init__(self, target_rate: int):
+        self.rate = target_rate
+        self.resampler = Resampler(NATIVE_RATE, target_rate)
+        # ~2s at 48kHz before we start dropping
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+    async def deliver(self, pcm48: bytes) -> None:
+        pcm_out = self.resampler.process(pcm48)
+        if not pcm_out:
+            return
+        try:
+            self.queue.put_nowait(pcm_out)
+        except asyncio.QueueFull:
+            # Drop oldest to keep latency bounded
+            try:
+                self.queue.get_nowait()
+                self.queue.put_nowait(pcm_out)
+            except Exception:
+                pass
+
+    async def next(self) -> bytes:
+        return await self.queue.get()
+
+
+class MicUploader:
+    """Per-connection accumulator turning UI PCM at src_rate into 20ms 48kHz frames."""
+
+    def __init__(self, hub: "AudioHub", src_rate: int):
+        self.hub = hub
+        self.src_rate = src_rate
+        self.resampler = Resampler(src_rate, NATIVE_RATE)
+        self._buf = bytearray()
+
+    async def feed(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            return
+        pcm48 = self.resampler.process(pcm_bytes)
+        self._buf.extend(pcm48)
+        # Hand off complete 20ms frames
+        while len(self._buf) >= FRAME_BYTES:
+            frame = bytes(self._buf[:FRAME_BYTES])
+            del self._buf[:FRAME_BYTES]
+            await self.hub.queue_mic_frame(frame)
+
+
+class AudioHub:
+    """Per-device mux: fanout speaker to listeners, collect mic from uploaders."""
+
+    def __init__(self, device: "Device"):
+        self.device = device
+        self.down = OpusCodec(bitrate=64000)   # decode phone speaker
+        self.up = OpusCodec(bitrate=32000)     # encode UI mic
+        self.listeners: Set[UIListener] = set()
+        self.up_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+
+    def add_listener(self, l: UIListener) -> None:
+        self.listeners.add(l)
+
+    def remove_listener(self, l: UIListener) -> None:
+        self.listeners.discard(l)
+
+    async def on_speaker_opus(self, pkt: bytes) -> None:
+        pcm48 = self.down.decode(pkt)
+        if not pcm48:
+            return
+        for l in list(self.listeners):
+            await l.deliver(pcm48)
+
+    async def queue_mic_frame(self, pcm48_frame: bytes) -> None:
+        """Encode one 20ms 48kHz PCM frame and enqueue for the phone."""
+        pkt = self.up.encode(pcm48_frame)
+        if not pkt:
+            return
+        try:
+            self.up_queue.put_nowait(pkt)
+        except asyncio.QueueFull:
+            # Keep latest: drop oldest
+            try:
+                self.up_queue.get_nowait()
+                self.up_queue.put_nowait(pkt)
+            except Exception:
+                pass
+
+    async def next_mic_packet(self) -> Optional[bytes]:
+        return await self.up_queue.get()
+
+
+# ─── Device session ──────────────────────────────────────────────────────────
 class Device:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, info: dict):
         self.reader = reader
         self.writer = writer
-        self.id = info.get("id", "unknown")
-        self.name = info.get("name", "Unknown Device")
-        self.call_state = "IDLE"
-        self.active_number = ""
-        self.is_connected = True
+        self.id: str = info.get("id", "unknown")
+        self.name: str = info.get("name", "Unknown")
+        self.brand: str = info.get("brand", "")
+        self.android: str = info.get("android", "")
+        self.call_state: str = "IDLE"
+        self.active_number: str = ""
+        self.connected: bool = True
+        self.audio = AudioHub(self)
+        self._write_lock = asyncio.Lock()
 
-    async def send_control(self, command: str, **kwargs):
-        payload = {"command": command}
-        payload.update(kwargs)
-        data = json.dumps(payload).encode()
-        await self._send_frame(T_CONTROL, data)
+    async def send_frame(self, frame_type: int, data: bytes) -> None:
+        hdr = struct.pack(">BI", frame_type, len(data))
+        async with self._write_lock:
+            try:
+                self.writer.write(hdr + data)
+                await self.writer.drain()
+            except Exception as e:
+                log.warning("send_frame %s: %s", self.id, e)
+                self.connected = False
 
-    async def _send_frame(self, frame_type: int, data: bytes):
-        try:
-            hdr = struct.pack('>BI', frame_type, len(data))
-            self.writer.write(hdr + data)
-            await self.writer.drain()
-        except Exception as e:
-            logger.error(f"Error sending frame to {self.id}: {e}")
-            self.is_connected = False
+    async def send_control(self, command: str, **kw) -> None:
+        payload = {"command": command, **kw}
+        await self.send_frame(T_CONTROL, json.dumps(payload).encode())
+
 
 class DeviceManager:
     def __init__(self):
         self.devices: Dict[str, Device] = {}
         self.ui_clients: Set[WebSocket] = set()
 
-    def add_device(self, device: Device):
-        self.devices[device.id] = device
-        logger.info(f"Device connected: {device.name} ({device.id})")
+    def add(self, d: Device) -> None:
+        self.devices[d.id] = d
+        log.info("Device connected: %s (%s, %s %s)", d.name, d.id, d.brand, d.android)
         asyncio.create_task(self.broadcast_state())
 
-    def remove_device(self, device_id: str):
-        if device_id in self.devices:
-            del self.devices[device_id]
-            logger.info(f"Device disconnected: {device_id}")
-            asyncio.create_task(self.broadcast_state())
+    def remove(self, d: Device) -> None:
+        self.devices.pop(d.id, None)
+        log.info("Device disconnected: %s", d.id)
+        asyncio.create_task(self.broadcast_state())
 
-    async def connect_ui(self, websocket: WebSocket):
-        await websocket.accept()
-        self.ui_clients.add(websocket)
-        await self.send_state_to_client(websocket)
+    async def connect_ui(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self.ui_clients.add(ws)
+        await ws.send_json(self._state())
 
-    def disconnect_ui(self, websocket: WebSocket):
-        self.ui_clients.remove(websocket)
+    def disconnect_ui(self, ws: WebSocket) -> None:
+        self.ui_clients.discard(ws)
 
-    async def broadcast_state(self):
-        if not self.ui_clients:
-            return
-        state = self._get_state()
-        for client in list(self.ui_clients):
+    async def broadcast_state(self) -> None:
+        state = self._state()
+        for ws in list(self.ui_clients):
             try:
-                await client.send_json(state)
-            except:
-                self.ui_clients.remove(client)
+                await ws.send_json(state)
+            except Exception:
+                self.ui_clients.discard(ws)
 
-    async def send_state_to_client(self, websocket: WebSocket):
-        try:
-            await websocket.send_json(self._get_state())
-        except:
-            pass
+    async def broadcast_event(self, event: dict) -> None:
+        for ws in list(self.ui_clients):
+            try:
+                await ws.send_json(event)
+            except Exception:
+                self.ui_clients.discard(ws)
 
-    def _get_state(self):
+    def _state(self) -> dict:
         return {
             "type": "state_update",
             "devices": [
                 {
                     "id": d.id,
                     "name": d.name,
+                    "brand": d.brand,
+                    "android": d.android,
                     "state": d.call_state,
-                    "number": d.active_number
+                    "number": d.active_number,
                 }
                 for d in self.devices.values()
-            ]
+            ],
         }
 
-manager = DeviceManager()
 
-@app.websocket("/ws/ui")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect_ui(websocket)
+mgr = DeviceManager()
+
+
+# ─── TCP: phone daemon ───────────────────────────────────────────────────────
+async def do_handshake(reader: asyncio.StreamReader) -> Optional[dict]:
+    line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=10.0)
+    info = json.loads(line.decode())
+    dev_id = info.get("id", "")
+    date = info.get("date", "")
+    recv_hmac = info.get("hmac", "")
+    expected = hmac.new(
+        AUTH_TOKEN.encode(), f"{dev_id}-{date}".encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(recv_hmac, expected):
+        return None
+    return info
+
+
+async def read_frame(reader: asyncio.StreamReader) -> Tuple[int, bytes]:
+    hdr = await reader.readexactly(5)
+    t = hdr[0]
+    n = struct.unpack(">I", hdr[1:5])[0]
+    data = await reader.readexactly(n) if n else b""
+    return t, data
+
+
+async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    addr = writer.get_extra_info("peername")
+    log.info("TCP connect from %s", addr)
+    device: Optional[Device] = None
+    uplink_task: Optional[asyncio.Task] = None
+
     try:
-        while True:
-            data = await websocket.receive_json()
-            command = data.get("command")
-            device_id = data.get("device_id")
-            
-            if not device_id or device_id not in manager.devices:
-                continue
-                
-            device = manager.devices[device_id]
-            
-            if command == "dial":
-                await device.send_control("dial", number=data.get("number"))
-            elif command == "hangup":
-                await device.send_control("hangup")
-            elif command == "answer":
-                await device.send_control("answer")
-            elif command == "send_sms":
-                await device.send_control("send_sms", number=data.get("number"), message=data.get("message"))
-                
-    except WebSocketDisconnect:
-        manager.disconnect_ui(websocket)
-
-async def handle_device_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    addr = writer.get_extra_info('peername')
-    logger.info(f"[CONN] New TCP+TLS connection from {addr}")
-
-    try:
-        # Handshake
-        logger.info(f"[CONN] Waiting for handshake from {addr}...")
-        line = await asyncio.wait_for(reader.readuntil(b'\n'), timeout=10.0)
-        logger.info(f"[CONN] Got handshake: {line.decode().strip()[:200]}")
-        reg_info = json.loads(line.decode())
-        
-        # Verify HMAC
-        import hashlib
-        from datetime import datetime
-        
-        dev_id = reg_info.get("id", "")
-        recv_date = reg_info.get("date", "")
-        recv_hmac = reg_info.get("hmac", "")
-        
-        # Recreate the message exactly as the client did: device_id + "-" + dd-mm-yy
-        msg = f"{dev_id}-{recv_date}"
-        
-        # Verify the date is from today or yesterday to prevent replay attacks
-        # (Though timezone differences could cause off-by-one day)
-        expected_hmac = hashlib.sha256(AUTH_TOKEN.encode() + msg.encode()).hexdigest()
-        
-        # mbedtls_md_hmac(key, key_len, msg, msg_len) is literally HMAC, not just sha256(key+msg).
-        import hmac
-        expected_hmac = hmac.new(AUTH_TOKEN.encode(), msg.encode(), hashlib.sha256).hexdigest()
-        
-        if not hmac.compare_digest(recv_hmac, expected_hmac):
-            logger.warning(f"Invalid HMAC from {addr}. Expected {expected_hmac}, got {recv_hmac}")
+        info = await do_handshake(reader)
+        if info is None:
             writer.write(b'{"status":"error","msg":"invalid hmac signature"}\n')
             await writer.drain()
-            writer.close()
             return
-            
         writer.write(b'{"status":"ok"}\n')
         await writer.drain()
-        
-        device = Device(reader, writer, reg_info)
-        manager.add_device(device)
-        
-        # Read frames loop
-        while device.is_connected:
-            hdr = await reader.readexactly(5)
-            frame_type = hdr[0]
-            length = struct.unpack('>I', hdr[1:5])[0]
-            
-            if length > 0:
-                data = await reader.readexactly(length)
-            else:
-                data = b''
-                
-            if frame_type == T_CALL_STATUS:
-                status = json.loads(data.decode())
-                device.call_state = status.get("state_name", "UNKNOWN")
-                device.active_number = status.get("number", "")
-                await manager.broadcast_state()
-            elif frame_type == T_SMS:
-                # Forward SMS to UI
-                sms_data = json.loads(data.decode())
-                for client in list(manager.ui_clients):
-                    try:
-                        await client.send_json(sms_data)
-                    except:
-                        pass
-            elif frame_type == T_PING:
-                await device._send_frame(T_PONG, b'')
-                
+
+        device = Device(reader, writer, info)
+        mgr.add(device)
+
+        async def pump_mic_to_phone():
+            while device.connected:
+                pkt = await device.audio.next_mic_packet()
+                if pkt is None:
+                    break
+                await device.send_frame(T_VIRTUAL_MIC, pkt)
+        uplink_task = asyncio.create_task(pump_mic_to_phone())
+
+        while device.connected:
+            t, data = await read_frame(reader)
+            if t == T_SPEAKER:
+                await device.audio.on_speaker_opus(data)
+            elif t == T_CALL_STATUS:
+                try:
+                    st = json.loads(data.decode())
+                    device.call_state = st.get("state_name", "UNKNOWN")
+                    device.active_number = st.get("number", "")
+                    await mgr.broadcast_state()
+                    await mgr.broadcast_event({"type": "call_status", "device_id": device.id, **st})
+                except Exception as e:
+                    log.debug("call_status parse: %s", e)
+            elif t == T_SMS:
+                try:
+                    sms = json.loads(data.decode())
+                    sms["device_id"] = device.id
+                    await mgr.broadcast_event(sms)
+                except Exception as e:
+                    log.debug("sms parse: %s", e)
+            elif t == T_PING:
+                await device.send_frame(T_PONG, b"")
+            # T_PONG: silently accepted
     except asyncio.TimeoutError:
-        logger.warning(f"[CONN] Timeout from {addr} - no handshake data in 10s")
+        log.info("handshake timeout from %s", addr)
     except asyncio.IncompleteReadError:
-        logger.info(f"[CONN] Connection closed by {addr}")
+        pass
     except Exception as e:
-        logger.error(f"[CONN] Error from {addr}: {type(e).__name__}: {e}")
+        log.warning("device %s: %s: %s", addr, type(e).__name__, e)
     finally:
-        if 'device' in locals():
-            manager.remove_device(device.id)
-        writer.close()
+        if device:
+            device.connected = False
+            # Unblock the uplink pump
+            try:
+                device.audio.up_queue.put_nowait(None)
+            except Exception:
+                pass
+            mgr.remove(device)
+        if uplink_task:
+            uplink_task.cancel()
+        try:
+            writer.close()
+        except Exception:
+            pass
 
-async def start_tcp_server():
-    server = await asyncio.start_server(
-        handle_device_client, 
-        '0.0.0.0', 
-        59100
-    )
-    logger.info("TCP Audio Bridge Server listening on 0.0.0.0:59100 (Plain TCP with HMAC)")
-    async with server:
-        await server.serve_forever()
 
-from fastapi.responses import HTMLResponse
+async def start_tcp() -> None:
+    srv = await asyncio.start_server(handle_device, "0.0.0.0", TCP_PORT)
+    log.info("TCP on :%d (HMAC auth, Opus@48k)", TCP_PORT)
+    async with srv:
+        await srv.serve_forever()
+
+
+# ─── FastAPI ────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(start_tcp())
+    if not HAS_OPUS:
+        log.warning("opuslib missing — audio bridging disabled (pip install opuslib)")
+    if not HAS_SOXR:
+        log.warning("python-soxr missing — sample-rate conversion disabled (pip install soxr numpy)")
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Audio Bridge Server", lifespan=lifespan)
+
+
+@app.websocket("/ws/ui")
+async def ws_ui(ws: WebSocket) -> None:
+    await mgr.connect_ui(ws)
+    try:
+        while True:
+            data = await ws.receive_json()
+            cmd = data.get("command")
+            did = data.get("device_id")
+            if not did or did not in mgr.devices:
+                continue
+            d = mgr.devices[did]
+            if cmd == "dial":
+                await d.send_control("dial", number=data.get("number"))
+            elif cmd == "hangup":
+                await d.send_control("hangup")
+            elif cmd == "answer":
+                await d.send_control("answer")
+            elif cmd == "send_sms":
+                await d.send_control(
+                    "send_sms",
+                    number=data.get("number"),
+                    message=data.get("message"),
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        mgr.disconnect_ui(ws)
+
+
+@app.websocket("/ws/audio/{device_id}")
+async def ws_audio(
+    ws: WebSocket,
+    device_id: str,
+    rate: int = Query(NATIVE_RATE, ge=8000, le=96000),
+    dir: str = Query("both", regex="^(listen|speak|both)$"),
+) -> None:
+    """
+    Binary frames: raw s16 mono PCM at `rate`.
+    dir=listen  server → client (phone speaker)
+    dir=speak   client → server (phone virtual mic)
+    dir=both    full duplex
+    """
+    if device_id not in mgr.devices:
+        await ws.close(code=4404)
+        return
+    await ws.accept()
+    device = mgr.devices[device_id]
+    hub = device.audio
+
+    want_listen = dir in ("listen", "both")
+    want_speak = dir in ("speak", "both")
+
+    listener = UIListener(rate) if want_listen else None
+    uploader = MicUploader(hub, rate) if want_speak else None
+    if listener:
+        hub.add_listener(listener)
+
+    async def pump_to_client():
+        try:
+            while True:
+                pcm = await listener.next()
+                await ws.send_bytes(pcm)
+        except Exception:
+            pass
+
+    pump_task = asyncio.create_task(pump_to_client()) if listener else None
+
+    try:
+        while True:
+            msg = await ws.receive()
+            mtype = msg.get("type")
+            if mtype == "websocket.disconnect":
+                break
+            payload_bytes = msg.get("bytes")
+            payload_text = msg.get("text")
+            if payload_bytes is not None and uploader:
+                await uploader.feed(payload_bytes)
+            elif payload_text is not None:
+                # Optional JSON control on audio socket (e.g. change rate)
+                try:
+                    j = json.loads(payload_text)
+                    new_rate = int(j.get("rate", rate))
+                    if new_rate != rate:
+                        rate = new_rate
+                        if listener:
+                            listener.rate = new_rate
+                            listener.resampler = Resampler(NATIVE_RATE, new_rate)
+                        if uploader:
+                            uploader.src_rate = new_rate
+                            uploader.resampler = Resampler(new_rate, NATIVE_RATE)
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if pump_task:
+            pump_task.cancel()
+        if listener:
+            hub.remove_listener(listener)
+
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    return DASHBOARD_HTML
+async def dashboard() -> str:
+    path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return (
+            "<h1>Audio Bridge</h1>"
+            "<p>dashboard.html is missing next to main.py</p>"
+        )
 
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Audio Bridge — Control Panel</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Inter', sans-serif; background: #0a0e1a; color: #e0e4f0; min-height: 100vh; }
-  
-  .header {
-    background: linear-gradient(135deg, #1a1f35 0%, #0d1225 100%);
-    border-bottom: 1px solid rgba(99,102,241,0.2);
-    padding: 1.5rem 2rem;
-    display: flex; align-items: center; gap: 1rem;
-  }
-  .header h1 { font-size: 1.5rem; font-weight: 600; background: linear-gradient(135deg, #818cf8, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .header .status { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; }
-  .dot.online { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
-  .dot.offline { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
-  
-  .container { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-  
-  .card {
-    background: linear-gradient(135deg, #141829 0%, #0f1322 100%);
-    border: 1px solid rgba(99,102,241,0.15);
-    border-radius: 16px; padding: 1.5rem;
-    transition: border-color 0.3s;
-  }
-  .card:hover { border-color: rgba(99,102,241,0.4); }
-  .card h2 { font-size: 1rem; font-weight: 600; color: #818cf8; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 0.5px; }
-  
-  .devices-list { display: flex; flex-direction: column; gap: 0.75rem; }
-  .device-item {
-    background: rgba(99,102,241,0.05); border: 1px solid rgba(99,102,241,0.1);
-    border-radius: 12px; padding: 1rem; cursor: pointer;
-    transition: all 0.2s;
-  }
-  .device-item:hover { background: rgba(99,102,241,0.1); transform: translateY(-1px); }
-  .device-item.selected { border-color: #6366f1; background: rgba(99,102,241,0.15); }
-  .device-name { font-weight: 600; font-size: 0.95rem; }
-  .device-meta { font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem; }
-  .device-state { font-size: 0.8rem; color: #22c55e; margin-top: 0.25rem; }
-  
-  .no-devices { color: #6b7280; text-align: center; padding: 2rem; font-size: 0.9rem; }
-  
-  input, textarea {
-    width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2);
-    border-radius: 10px; padding: 0.75rem 1rem; color: #e0e4f0; font-family: inherit; font-size: 0.9rem;
-    outline: none; transition: border-color 0.2s;
-  }
-  input:focus, textarea:focus { border-color: #6366f1; }
-  textarea { resize: vertical; min-height: 80px; }
-  
-  .input-group { margin-bottom: 1rem; }
-  .input-group label { display: block; font-size: 0.8rem; color: #9ca3af; margin-bottom: 0.4rem; font-weight: 500; }
-  
-  .btn-row { display: flex; gap: 0.75rem; margin-top: 1rem; }
-  button {
-    flex: 1; padding: 0.7rem 1rem; border: none; border-radius: 10px;
-    font-family: inherit; font-weight: 600; font-size: 0.85rem; cursor: pointer;
-    transition: all 0.2s;
-  }
-  .btn-call { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
-  .btn-call:hover { transform: translateY(-1px); box-shadow: 0 4px 12px #22c55e44; }
-  .btn-hangup { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
-  .btn-hangup:hover { transform: translateY(-1px); box-shadow: 0 4px 12px #ef444444; }
-  .btn-answer { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
-  .btn-answer:hover { transform: translateY(-1px); box-shadow: 0 4px 12px #3b82f644; }
-  .btn-sms { background: linear-gradient(135deg, #818cf8, #6366f1); color: #fff; }
-  .btn-sms:hover { transform: translateY(-1px); box-shadow: 0 4px 12px #6366f144; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
-  
-  .log-area {
-    background: #0a0d14; border: 1px solid rgba(99,102,241,0.1); border-radius: 12px;
-    padding: 1rem; font-family: 'Courier New', monospace; font-size: 0.75rem;
-    max-height: 200px; overflow-y: auto; color: #9ca3af; line-height: 1.6;
-  }
-  .log-entry.info { color: #60a5fa; }
-  .log-entry.event { color: #22c55e; }
-  .log-entry.error { color: #f87171; }
-  
-  .full-width { grid-column: 1 / -1; }
-  
-  @media (max-width: 768px) {
-    .container { grid-template-columns: 1fr; }
-  }
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🎧 Audio Bridge</h1>
-  <div class="status">
-    <div class="dot" id="ws-dot"></div>
-    <span id="ws-status">Connecting...</span>
-  </div>
-</div>
-
-<div class="container">
-  <div class="card">
-    <h2>📱 Connected Devices</h2>
-    <div id="devices" class="devices-list">
-      <div class="no-devices">No devices connected. Configure the daemon on your phone.</div>
-    </div>
-  </div>
-  
-  <div class="card">
-    <h2>📞 Call Control</h2>
-    <div class="input-group">
-      <label>Phone Number</label>
-      <input type="tel" id="phone-number" placeholder="+1234567890">
-    </div>
-    <div class="btn-row">
-      <button class="btn-call" id="btn-dial" disabled>Dial</button>
-      <button class="btn-answer" id="btn-answer" disabled>Answer</button>
-      <button class="btn-hangup" id="btn-hangup" disabled>Hang Up</button>
-    </div>
-  </div>
-  
-  <div class="card">
-    <h2>💬 SMS</h2>
-    <div class="input-group">
-      <label>Recipient Number</label>
-      <input type="tel" id="sms-number" placeholder="+1234567890">
-    </div>
-    <div class="input-group">
-      <label>Message</label>
-      <textarea id="sms-message" placeholder="Type your message..."></textarea>
-    </div>
-    <div class="btn-row">
-      <button class="btn-sms" id="btn-sms" disabled>Send SMS</button>
-    </div>
-  </div>
-  
-  <div class="card">
-    <h2>📋 Event Log</h2>
-    <div class="log-area" id="log-area"></div>
-  </div>
-</div>
-
-<script>
-let ws = null;
-let selectedDevice = null;
-
-function addLog(msg, type = 'info') {
-    const area = document.getElementById('log-area');
-    const entry = document.createElement('div');
-    entry.className = 'log-entry ' + type;
-    entry.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
-    area.appendChild(entry);
-    area.scrollTop = area.scrollHeight;
-}
-
-function updateButtons() {
-    const has = selectedDevice !== null;
-    document.getElementById('btn-dial').disabled = !has;
-    document.getElementById('btn-answer').disabled = !has;
-    document.getElementById('btn-hangup').disabled = !has;
-    document.getElementById('btn-sms').disabled = !has;
-}
-
-function renderDevices(devices) {
-    const container = document.getElementById('devices');
-    console.log(devices);
-    if (!devices || devices.length === 0) {
-        container.innerHTML = '<div class="no-devices">No devices connected. Configure the daemon on your phone.</div>';
-        selectedDevice = null;
-        updateButtons();
-        return;
-    }
-    container.innerHTML = '';
-    let foundSelected = false;
-    for (const d of devices) {
-        const id = d.id;
-        if (selectedDevice === id) foundSelected = true;
-        const item = document.createElement('div');
-        item.className = 'device-item' + (selectedDevice === id ? ' selected' : '');
-        item.innerHTML = '<div class="device-name">' + (d.name || id) + '</div>'
-            + '<div class="device-meta">ID: ' + id + '</div>'
-            + '<div class="device-state">Call: ' + (d.state || 'IDLE') + (d.number ? ' (' + d.number + ')' : '') + '</div>';
-        item.onclick = () => { selectedDevice = id; renderDevices(devices); updateButtons(); };
-        container.appendChild(item);
-    }
-    if (!foundSelected && devices.length > 0) {
-        selectedDevice = devices[0].id;
-        renderDevices(devices);
-    }
-    updateButtons();
-}
-
-function connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws/ui');
-    ws.onopen = () => {
-        document.getElementById('ws-dot').className = 'dot online';
-        document.getElementById('ws-status').textContent = 'Connected';
-        addLog('WebSocket connected to server', 'event');
-    };
-    ws.onclose = () => {
-        document.getElementById('ws-dot').className = 'dot offline';
-        document.getElementById('ws-status').textContent = 'Disconnected';
-        addLog('WebSocket disconnected, reconnecting...', 'error');
-        setTimeout(connect, 3000);
-    };
-    ws.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-        if (data.type === 'state_update' || data.type === 'state') {
-            renderDevices(data.devices);
-        } else if (data.event) {
-            addLog('Event: ' + JSON.stringify(data), 'event');
-        } else {
-            addLog('Received: ' + JSON.stringify(data), 'info');
-        }
-    };
-}
-
-document.getElementById('btn-dial').onclick = () => {
-    const num = document.getElementById('phone-number').value.trim();
-    if (!num || !selectedDevice) return;
-    ws.send(JSON.stringify({ command: 'dial', device_id: selectedDevice, number: num }));
-    addLog('Dialing ' + num + '...', 'info');
-};
-document.getElementById('btn-answer').onclick = () => {
-    if (!selectedDevice) return;
-    ws.send(JSON.stringify({ command: 'answer', device_id: selectedDevice }));
-    addLog('Answering call...', 'info');
-};
-document.getElementById('btn-hangup').onclick = () => {
-    if (!selectedDevice) return;
-    ws.send(JSON.stringify({ command: 'hangup', device_id: selectedDevice }));
-    addLog('Hanging up...', 'info');
-};
-document.getElementById('btn-sms').onclick = () => {
-    const num = document.getElementById('sms-number').value.trim();
-    const msg = document.getElementById('sms-message').value.trim();
-    if (!num || !msg || !selectedDevice) return;
-    ws.send(JSON.stringify({ command: 'send_sms', device_id: selectedDevice, number: num, message: msg }));
-    addLog('Sending SMS to ' + num + '...', 'info');
-    document.getElementById('sms-message').value = '';
-};
-
-connect();
-</script>
-</body>
-</html>"""
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=HTTP_PORT, reload=False)

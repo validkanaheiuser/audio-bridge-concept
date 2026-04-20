@@ -1,3 +1,12 @@
+# Runtime deps. Audio transcoding (opuslib + soxr) is optional: main.py
+# degrades gracefully when either is missing.
+# opuslib is a ctypes wrapper — the target host needs libopus installed:
+#   Debian/Ubuntu:  apt-get install libopus0
+#   Fedora:         dnf install opus
+#   macOS:          brew install opus
 fastapi>=0.100.0
 uvicorn>=0.23.0
 cryptography>=41.0.0
+opuslib>=3.0.1
+soxr>=0.3.7
+numpy>=1.24.0
