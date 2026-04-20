@@ -206,8 +206,7 @@ build_apk() {
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
@@ -218,7 +217,7 @@ build_apk() {
             android:name=".AudioBridgeService"
             android:enabled="true"
             android:exported="true"
-            android:foregroundServiceType="phoneCall|microphone" />
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".BootReceiver"
