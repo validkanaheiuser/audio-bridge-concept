@@ -5,6 +5,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
 /**
  * Starts AudioBridgeService in response to:
  *   - android.intent.action.BOOT_COMPLETED (system fires on boot)
@@ -20,12 +26,26 @@ import android.os.Build;
  */
 public class BootReceiver extends BroadcastReceiver {
     private static final String TAG = "AudioBridge-Boot";
+    private static final String DIAG = "/data/local/tmp/audio_bridge_java.log";
+    private static final SimpleDateFormat TS =
+        new SimpleDateFormat("HH:mm:ss", Locale.US);
+
+    private static void diag(String msg) {
+        android.util.Log.i(TAG, msg);
+        try (FileWriter w = new FileWriter(DIAG, true)) {
+            w.write(TS.format(new Date()) + " [boot] " + msg + "\n");
+        } catch (IOException ignored) {}
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
+        diag("onReceive action=" + action
+             + " pid=" + android.os.Process.myPid()
+             + " uid=" + android.os.Process.myUid());
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action)
                 && !"com.audiobridge.START".equals(action)) {
+            diag("ignored (unknown action)");
             return;
         }
         Intent svc = new Intent(context, AudioBridgeService.class);
@@ -35,9 +55,10 @@ public class BootReceiver extends BroadcastReceiver {
             } else {
                 context.startService(svc);
             }
-            android.util.Log.i(TAG, "Service started (action=" + action + ")");
-        } catch (Exception e) {
-            android.util.Log.e(TAG, "startForegroundService failed", e);
+            diag("startForegroundService returned normally");
+        } catch (Throwable e) {
+            diag("startForegroundService FAILED: " + e.getClass().getSimpleName()
+                 + ": " + e.getMessage());
         }
     }
 }
