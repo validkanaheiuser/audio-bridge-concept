@@ -349,6 +349,15 @@ static bool app_should_hook(const char* nice_name) {
         "com.android.dialer",
         "com.google.android.dialer",
         "com.android.systemui",
+        // Samsung One UI dialer / call surfaces. SecPhone is the default
+        // dialer on Galaxy devices and runs InCallUI in its own process;
+        // telephonyui hosts VoLTE/IMS UX. All three need the AudioTrack /
+        // AudioRecord hooks during a call so app-side audio is captured.
+        "com.samsung.android.dialer",
+        "com.samsung.android.incallui",
+        "com.samsung.android.app.telephonyui",
+        "com.sec.imsservice",
+        "com.sec.epdg",
         nullptr,
     };
     for (int i = 0; kAllow[i]; ++i) {

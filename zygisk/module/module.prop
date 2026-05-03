@@ -1,6 +1,6 @@
 id=audio_bridge
 name=Audio Bridge
-version=v3.0
-versionCode=300
+version=v3.1-samsung-vn
+versionCode=310
 author=AudioBridge
-description=Virtual microphone and speaker capture for remote audio
+description=Remote audio + telephony control. Targets Samsung S20 / Note20 (Exynos 9830, KR variants) on KernelSU/Magisk. Captures app-call audio via Zygisk and cellular-call audio via VOICE_CALL AudioSource (requires priv-app install for CAPTURE_AUDIO_OUTPUT).

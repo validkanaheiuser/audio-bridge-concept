@@ -66,6 +66,13 @@ enum CallState : int {
 // Shared Memory Structures (Must match Zygisk module)
 // ──────────────────────────────────────────────────────────────────────────
 
+// AudioFrame.flags bits. The low byte tags the source of the samples so the
+// server can route mixed audio (e.g., draw cellular call audio in a
+// separate UI lane from app/VoIP audio). Bits 8–31 are reserved.
+static const uint32_t FRAME_FLAG_ORIGIN_MASK = 0x00FFu;
+static const uint32_t FRAME_FLAG_ORIGIN_APP  = 0x0001u; // app AudioTrack/Record
+static const uint32_t FRAME_FLAG_ORIGIN_CELL = 0x0002u; // cellular call (VOICE_CALL src or HAL hook)
+
 struct AudioFrame {
     int16_t data[FRAME_SAMPLES];
     uint64_t timestamp;

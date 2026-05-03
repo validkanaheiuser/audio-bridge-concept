@@ -73,15 +73,32 @@ The Audio Bridge uses a custom multiplexed TCP protocol with the following frame
 ### Call State Change
 ```json
 {
-  "type": "call_status",
-  "state": 2,
-  "state_name": "OFFHOOK",
+  "type": "call",
+  "state": "ACTIVE",
+  "direction": "outgoing",
   "number": "+1234567890",
-  "timestamp": 1713524400
+  "started_at": 1713524400000,
+  "duration_ms": 0,
+  "muted": false,
+  "sub_id": 1,
+  "sim_slot": 0,
+  "voice_network_type": 13,
+  "voice_network_name": "4G",
+  "data_concurrent_with_voice": true
 }
 ```
 
-**States:** 0=IDLE, 1=RINGING, 2=OFFHOOK, 3=DIALING, 4=HOLDING
+**States:** `IDLE`, `RINGING`, `DIALING`, `ACTIVE` (legacy numeric: 0=IDLE, 1=RINGING, 2=OFFHOOK, 3=DIALING, 4=HOLDING).
+
+**Per-SIM fields** (added for dual-SIM and Samsung KR + Vietnamese-SIM operations):
+
+| Field | Meaning |
+|-------|---------|
+| `sub_id` | Android subscription id of the SIM the call is on |
+| `sim_slot` | Physical slot index (0 or 1 on DSDS) |
+| `voice_network_type` | Numeric `TelephonyManager.NETWORK_TYPE_*` |
+| `voice_network_name` | Human label: `2G`, `3G`, `4G`, `5G`, `unknown` |
+| `data_concurrent_with_voice` | `false` on 3G WCDMA — server should expect the daemon's TCP to stall during the call unless on Wi-Fi |
 
 ### Call Waiting
 ```json
@@ -111,3 +128,37 @@ The Audio Bridge uses a custom multiplexed TCP protocol with the following frame
 - **Frame Size**: 20ms (960 samples)
 - **Bitrate**: 64kbps (speaker), 32kbps (mic)
 - **FEC**: Enabled
+
+### Frame origin tagging
+
+The phone-side SHM ring carries a `flags` field on every audio frame so
+multiple capture sources can share a single Opus stream over `T_SPEAKER`
+without needing a second TCP channel.
+
+| Flag bit | Constant | Meaning |
+|---------:|----------|---------|
+| `0x01` | `FRAME_FLAG_ORIGIN_APP` | App audio (Discord, browser, etc.) caught by the Zygisk hook |
+| `0x02` | `FRAME_FLAG_ORIGIN_CELL` | Cellular call audio (`MediaRecorder.AudioSource.VOICE_CALL` via the helper APK, or HAL hook) |
+
+The server does not need to interpret the flags to play audio back; it
+only needs them if the UI wants to label or route the two streams
+separately. Bits 8–31 are reserved.
+
+## Cellular call audio path
+
+Cellular voice never traverses AudioFlinger, so the Zygisk
+`AudioRecord`/`AudioTrack` hooks miss it entirely. The helper APK opens
+an `AudioRecord` on `MediaRecorder.AudioSource.VOICE_CALL` (falling back
+to `VOICE_DOWNLINK`/`VOICE_UPLINK`/`VOICE_COMMUNICATION`) and streams
+20 ms 48 kHz mono int16 frames over a dedicated abstract Unix socket
+named `audio_bridge`, prefixed with the literal command
+`HELO_AUDIO_CELL`. The daemon pushes those frames into the speaker ring
+tagged with `FRAME_FLAG_ORIGIN_CELL`.
+
+This path requires `CAPTURE_AUDIO_OUTPUT`, a signature-only permission.
+The Magisk/KernelSU module ships
+`/system/etc/permissions/privapp-permissions-com.audiobridge.xml` to
+whitelist it — but the grant only takes effect when AudioBridge.apk is
+installed under `/system/priv-app/`. On a normal `/data` install the
+helper degrades cleanly: cellular calls go through, just without the
+server-side audio leg.

@@ -2,9 +2,9 @@ name: Build Audio Bridge Module
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, samsung-vn-cellular ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, samsung-vn-cellular ]
   workflow_dispatch:
 
 jobs:

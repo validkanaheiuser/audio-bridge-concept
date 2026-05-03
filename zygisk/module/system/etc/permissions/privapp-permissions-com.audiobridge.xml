@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Audio Bridge — privileged-permission allowlist.
+
+  This file is consumed by PackageManager only when AudioBridge.apk is
+  installed under /system/priv-app/. On a normal /data install the
+  framework ignores it, so it is safe to ship unconditionally as a
+  module overlay.
+
+  CAPTURE_AUDIO_OUTPUT  — required by MediaRecorder.AudioSource.VOICE_CALL,
+                          VOICE_UPLINK and VOICE_DOWNLINK. Signature|privileged
+                          since Android 10.
+  MODIFY_PHONE_STATE    — required for several TelecomManager / TelephonyManager
+                          paths used by TelephonyHelper (precise call state,
+                          mute toggle through Telecom, accept ringing call on
+                          some OneUI builds). Signature|privileged.
+  MODIFY_AUDIO_ROUTING  — lets the helper steer routing during a call (e.g.
+                          enable speakerphone, attach REMOTE_SUBMIX) without
+                          requiring system_app status.
+  CAPTURE_VOICE_COMMUNICATION_OUTPUT — Android 12+ alias used by some HALs.
+-->
+<permissions>
+    <privapp-permissions package="com.audiobridge">
+        <permission name="android.permission.CAPTURE_AUDIO_OUTPUT"/>
+        <permission name="android.permission.CAPTURE_VOICE_COMMUNICATION_OUTPUT"/>
+        <permission name="android.permission.MODIFY_PHONE_STATE"/>
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING"/>
+        <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE"/>
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+    </privapp-permissions>
+</permissions>

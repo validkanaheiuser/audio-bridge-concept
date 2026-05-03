@@ -1055,6 +1055,79 @@ static void read_java_client(int fd) {
     fclose(f);
 }
 
+// Cellular call audio client. The Java side (VoiceCallCapture) sends
+// fixed-size 20 ms 48 kHz mono int16 frames (1920 bytes each) — same shape
+// as the existing speaker_frames ring. We just pull them off the socket
+// and push them into the speaker ring tagged with FRAME_FLAG_ORIGIN_CELL.
+//
+// This co-exists with the Zygisk speaker-capture path: the encoder thread
+// drains a single ring, so cellular and app audio arriving simultaneously
+// would interleave at frame granularity. In practice they are mutually
+// exclusive — you can't have a SIM call active while another app holds
+// the voice audio focus — and the origin flag lets the server label
+// whatever does come through. No extra synchronization is required.
+// Mirror of audio_bridge.h FRAME_FLAG_ORIGIN_CELL. The daemon defines its own
+// duplicate copy of SAMPLE_RATE / FRAME_SAMPLES / etc. inline rather than
+// including audio_bridge.h, so we replicate this flag here too. Keep in sync.
+static const uint32_t FRAME_FLAG_ORIGIN_CELL = 0x0002u;
+
+static void read_cell_audio_client(int fd) {
+    auto* layout = (SharedMemoryLayout*)g_shm_ptr;
+    if (!layout) {
+        LOGE("Cell audio client: SHM not initialised");
+        close(fd);
+        return;
+    }
+
+    // Block reads until a full frame is available — keeps the producer
+    // (Java AudioRecord pump) and consumer (speaker encoder) in lockstep.
+    int16_t buf[FRAME_SAMPLES];
+    LOGI("Cell audio client connected (fd=%d)", fd);
+    uint64_t frames_in = 0;
+
+    while (g_running) {
+        // recv exactly FRAME_BYTES; on partial read, loop until we have it
+        // all or the peer closes.
+        size_t got = 0;
+        while (got < FRAME_BYTES) {
+            ssize_t n = recv(fd, ((char*)buf) + got, FRAME_BYTES - got, 0);
+            if (n <= 0) { got = 0; break; }
+            got += (size_t)n;
+        }
+        if (got != FRAME_BYTES) break;
+
+        // Push into speaker ring. Drop the frame if the ring is full
+        // rather than block — the encoder thread is paced by the network,
+        // and a backed-up ring means the server isn't keeping up; better
+        // to drop a 20 ms slice than introduce unbounded latency.
+        uint32_t w = layout->speaker_write_idx.load(std::memory_order_relaxed);
+        uint32_t r = layout->speaker_read_idx.load(std::memory_order_acquire);
+        uint32_t depth = (uint32_t)(w - r) % (SHM_RING_SIZE * 2);
+        if (depth >= SHM_RING_SIZE) {
+            // Ring full — discard this frame, advance the read pointer
+            // by one to make room for the next, freshest frame.
+            layout->speaker_read_idx.store((r + 1) % (SHM_RING_SIZE * 2),
+                                           std::memory_order_release);
+            continue;
+        }
+
+        AudioFrame& frame = layout->speaker_frames[w % SHM_RING_SIZE];
+        memcpy(frame.data, buf, FRAME_BYTES);
+        frame.timestamp =
+            std::chrono::steady_clock::now().time_since_epoch().count();
+        frame.flags = FRAME_FLAG_ORIGIN_CELL;
+        layout->speaker_write_idx.store((w + 1) % (SHM_RING_SIZE * 2),
+                                        std::memory_order_release);
+        if (++frames_in % 50 == 0) {
+            LOGD("Cell audio: %llu frames received", (unsigned long long)frames_in);
+        }
+    }
+
+    LOGI("Cell audio client disconnected (frames: %llu)",
+         (unsigned long long)frames_in);
+    close(fd);
+}
+
 static void unix_socket_server_thread() {
     unlink(g_socket_path);
     
@@ -1131,6 +1204,16 @@ static void unix_socket_server_thread() {
             } else if(strncmp(cmd, "HELO_JAVA", 9) == 0) {
                 std::thread java_client_thread(read_java_client, client_fd);
                 java_client_thread.detach();
+                // Do NOT close client_fd here
+            } else if(strncmp(cmd, "HELO_AUDIO_CELL", 15) == 0) {
+                // Cellular-call audio capture path. The Java side opens
+                // AudioRecord with MediaRecorder.AudioSource.VOICE_CALL,
+                // requests 48 kHz mono 16-bit, and streams 20 ms (1920-byte)
+                // frames over this socket. We push them into the speaker
+                // ring with FRAME_FLAG_ORIGIN_CELL so the server can label
+                // the audio in its UI without needing a separate stream.
+                std::thread cell_thread(read_cell_audio_client, client_fd);
+                cell_thread.detach();
                 // Do NOT close client_fd here
             } else {
                 close(client_fd);

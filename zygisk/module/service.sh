@@ -8,11 +8,67 @@ echo "$(date) Audio Bridge service.sh started" >> $LOG
 pm grant com.audiobridge android.permission.CALL_PHONE 2>/dev/null
 pm grant com.audiobridge android.permission.ANSWER_PHONE_CALLS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_PHONE_STATE 2>/dev/null
+pm grant com.audiobridge android.permission.READ_PHONE_NUMBERS 2>/dev/null
 pm grant com.audiobridge android.permission.SEND_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.RECEIVE_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.READ_SMS 2>/dev/null
 pm grant com.audiobridge android.permission.POST_NOTIFICATIONS 2>/dev/null
+pm grant com.audiobridge android.permission.RECORD_AUDIO 2>/dev/null
 appops set com.audiobridge SYSTEM_ALERT_WINDOW allow 2>/dev/null
+# RUN_IN_BACKGROUND / RUN_ANY_IN_BACKGROUND are Samsung-specific app-ops that
+# OneUI uses to gate background work. Allowing them is the first step in
+# preventing the helper service being put to sleep mid-call.
+appops set com.audiobridge RUN_IN_BACKGROUND allow 2>/dev/null
+appops set com.audiobridge RUN_ANY_IN_BACKGROUND allow 2>/dev/null
+
+# Signature-protected perms: pm grant works only when the APK is installed
+# under /system/priv-app/ AND a matching privapp-permissions overlay exists
+# (see module/system/etc/permissions/...). The grants are no-ops on a
+# normal /data install; we keep the call so a future priv-app install
+# automatically picks them up without re-running the module.
+pm grant com.audiobridge android.permission.CAPTURE_AUDIO_OUTPUT 2>/dev/null
+pm grant com.audiobridge android.permission.MODIFY_PHONE_STATE 2>/dev/null
+pm grant com.audiobridge android.permission.MODIFY_AUDIO_ROUTING 2>/dev/null
+
+# OneUI battery / sleep escapes. Without these, AudioBridgeService is
+# routinely killed once the screen is off — even with a foreground
+# notification. The settings DB keys are Samsung-specific and tolerated by
+# AOSP (writes silently fail). dumpsys deviceidle is AOSP and harmless.
+dumpsys deviceidle whitelist +com.audiobridge >/dev/null 2>&1
+cmd appops set com.audiobridge RUN_IN_BACKGROUND allow 2>/dev/null
+# Samsung "Sleeping apps" / "Deep sleeping apps" lists. Removing the package
+# from these lists prevents OneUI from suspending it.
+settings put global sleeping_apps "$(settings get global sleeping_apps 2>/dev/null | sed 's/com.audiobridge//g')" 2>/dev/null
+settings put global deep_sleeping_apps "$(settings get global deep_sleeping_apps 2>/dev/null | sed 's/com.audiobridge//g')" 2>/dev/null
+# OneUI 4+ "Auto-optimization" exclusion — Samsung-specific.
+settings put system auto_optimization_app_list_disable "$(settings get system auto_optimization_app_list_disable 2>/dev/null);com.audiobridge" 2>/dev/null
+
+# KR-firmware / non-KR-SIM mismatch warning. Both target devices ship with
+# KR CSC; a Vietnamese SIM (Viettel/Vinaphone/MobiFone) won't get VoLTE
+# without a CSC swap, which means cellular calls fall back to 3G WCDMA
+# where mobile data is suspended for the duration of the call. The daemon
+# uses this signal to prefer Wi-Fi over cellular when a call is active.
+SALES_CODE=$(getprop ro.csc.sales_code 2>/dev/null)
+SIM_OPER=$(getprop gsm.sim.operator.numeric 2>/dev/null)
+echo "$(date) CSC=$SALES_CODE  SIM_MCC_MNC=$SIM_OPER" >> $LOG
+# Vietnam MCC = 452. Viettel=01, Mobifone=02, Vinaphone=04/05, etc.
+case "$SIM_OPER" in
+    452*)
+        case "$SALES_CODE" in
+            SKC|KOO|LUC|KOR|KTC|KTT|SKO)
+                echo "$(date) WARNING: KR firmware ($SALES_CODE) + VN SIM ($SIM_OPER) — VoLTE likely unavailable; cellular calls will be 3G WCDMA (no concurrent mobile data). Consider CSC swap to XEV/XXV/DBT." >> $LOG
+                # Daemon reads this hint to bias the network strategy.
+                echo "1" > /data/local/tmp/audio_bridge.no_volte
+                ;;
+            *)
+                rm -f /data/local/tmp/audio_bridge.no_volte 2>/dev/null
+                ;;
+        esac
+        ;;
+    *)
+        rm -f /data/local/tmp/audio_bridge.no_volte 2>/dev/null
+        ;;
+esac
 
 # Apply SELinux rules at runtime. sepolicy.rule is read by Magisk/KernelSU on
 # boot, but a live push covers reinstalls and testing. The rule set covers

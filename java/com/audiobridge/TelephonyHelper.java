@@ -17,6 +17,8 @@ import android.telecom.TelecomManager;
 import android.telephony.PhoneStateListener;
 import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
+import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
 import android.Manifest;
@@ -41,6 +43,7 @@ public class TelephonyHelper {
     private Context mContext;
     private TelephonyManager mTelephonyManager;
     private TelecomManager mTelecomManager;
+    private SubscriptionManager mSubscriptionManager;
     private AudioManager mAudioManager;
     private SmsManager mSmsManager;
     private Handler mMainHandler;
@@ -48,6 +51,9 @@ public class TelephonyHelper {
     private final Map<String, SMSInfo> mPendingSMS = new ConcurrentHashMap<>();
     private final Map<String, CallInfo> mActiveCalls = new ConcurrentHashMap<>();
     private String mCurrentActiveCall = null;
+    // Cellular call audio capture. Owned by the singleton; lifecycle driven
+    // by handleCallStateChange (start on OFFHOOK, stop on IDLE).
+    private VoiceCallCapture mVoiceCapture;
 
     // ── Call state machine ─────────────────────────────────────────────────
     // Android's CALL_STATE_* doesn't distinguish incoming vs outgoing. We
@@ -79,8 +85,11 @@ public class TelephonyHelper {
         mMainHandler = new Handler(Looper.getMainLooper());
         mTelephonyManager = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
         mTelecomManager = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+        mSubscriptionManager = (SubscriptionManager) context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE);
         mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         mSmsManager = SmsManager.getDefault();
+
+        mVoiceCapture = new VoiceCallCapture(context);
 
         registerCallListener();
         registerSMSReceiver();
@@ -102,9 +111,108 @@ public class TelephonyHelper {
             e.put("started_at", mStartedAt);
             e.put("duration_ms", mStartedAt > 0 ? (System.currentTimeMillis() - mStartedAt) : 0);
             e.put("muted", mMuted);
+            // Per-SIM context. Server-side UI uses simSlot to label calls
+            // and data_concurrent_with_voice to decide whether the daemon's
+            // TCP stream will survive a cellular call (3G WCDMA suspends
+            // mobile data; LTE+VoLTE is concurrent).
+            int subId = getActiveSubId();
+            int slot  = getSlotForSubId(subId);
+            int voiceNet = getVoiceNetworkType(subId);
+            e.put("sub_id", subId);
+            e.put("sim_slot", slot);
+            e.put("voice_network_type", voiceNet);
+            e.put("voice_network_name", voiceNetworkName(voiceNet));
+            e.put("data_concurrent_with_voice", dataConcurrentWithVoice(voiceNet));
             IPCClient.getInstance().sendEvent(e);
         } catch (JSONException je) {
             android.util.Log.w(TAG, "emitCallState: " + je.getMessage());
+        }
+    }
+
+    // ── Dual-SIM / network-type helpers ────────────────────────────────────
+    // S20 KR (SM-G98xN) and Note20 KR (SM-N98xN) are both DSDS. The default
+    // TelephonyManager points at the data SIM, which may not be the SIM the
+    // current call is using. We resolve per-call: prefer the active call's
+    // accountHandle subId, fall back to the default *voice* subId.
+
+    private int getActiveSubId() {
+        try {
+            int dvs = SubscriptionManager.getDefaultVoiceSubscriptionId();
+            if (dvs != SubscriptionManager.INVALID_SUBSCRIPTION_ID) return dvs;
+        } catch (Throwable ignored) {}
+        try {
+            int dss = SubscriptionManager.getDefaultSubscriptionId();
+            if (dss != SubscriptionManager.INVALID_SUBSCRIPTION_ID) return dss;
+        } catch (Throwable ignored) {}
+        return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    }
+
+    private int getSlotForSubId(int subId) {
+        if (subId == SubscriptionManager.INVALID_SUBSCRIPTION_ID || mSubscriptionManager == null) return -1;
+        try {
+            SubscriptionInfo si = mSubscriptionManager.getActiveSubscriptionInfo(subId);
+            return si != null ? si.getSimSlotIndex() : -1;
+        } catch (SecurityException se) {
+            return -1;   // READ_PHONE_STATE missing — not fatal
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    private int getVoiceNetworkType(int subId) {
+        try {
+            TelephonyManager tm = (subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+                ? mTelephonyManager.createForSubscriptionId(subId)
+                : mTelephonyManager;
+            if (tm == null) return TelephonyManager.NETWORK_TYPE_UNKNOWN;
+            // getVoiceNetworkType requires READ_PHONE_STATE; getDataNetworkType
+            // is a sensible fallback when the voice radio hasn't reported yet.
+            int v = tm.getVoiceNetworkType();
+            if (v == TelephonyManager.NETWORK_TYPE_UNKNOWN) v = tm.getDataNetworkType();
+            return v;
+        } catch (SecurityException se) {
+            return TelephonyManager.NETWORK_TYPE_UNKNOWN;
+        } catch (Throwable t) {
+            return TelephonyManager.NETWORK_TYPE_UNKNOWN;
+        }
+    }
+
+    private static String voiceNetworkName(int t) {
+        switch (t) {
+            case TelephonyManager.NETWORK_TYPE_GPRS:
+            case TelephonyManager.NETWORK_TYPE_EDGE:
+            case TelephonyManager.NETWORK_TYPE_GSM:
+                return "2G";
+            case TelephonyManager.NETWORK_TYPE_UMTS:
+            case TelephonyManager.NETWORK_TYPE_HSDPA:
+            case TelephonyManager.NETWORK_TYPE_HSUPA:
+            case TelephonyManager.NETWORK_TYPE_HSPA:
+            case TelephonyManager.NETWORK_TYPE_HSPAP:
+            case TelephonyManager.NETWORK_TYPE_TD_SCDMA:
+                return "3G";
+            case TelephonyManager.NETWORK_TYPE_LTE:
+            case TelephonyManager.NETWORK_TYPE_IWLAN:
+                return "4G";
+            case TelephonyManager.NETWORK_TYPE_NR:
+                return "5G";
+            default:
+                return "unknown";
+        }
+    }
+
+    /**
+     * True when voice and data can run concurrently. On 3G WCDMA the modem
+     * suspends data while a voice call is up — the daemon must use Wi-Fi or
+     * the call will black-hole its TCP stream. LTE/VoLTE/5G are concurrent.
+     */
+    private static boolean dataConcurrentWithVoice(int t) {
+        switch (t) {
+            case TelephonyManager.NETWORK_TYPE_LTE:
+            case TelephonyManager.NETWORK_TYPE_NR:
+            case TelephonyManager.NETWORK_TYPE_IWLAN:
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -150,10 +258,20 @@ public class TelephonyHelper {
                     stateName = "ACTIVE";
                     if (mDir == Dir.UNKNOWN) mDir = Dir.OUTGOING;  // edge case
                     if (mStartedAt == 0) mStartedAt = System.currentTimeMillis();
+                    // Cellular audio path. Best-effort: if priv-app perms
+                    // aren't in place, start() returns false and the call
+                    // proceeds without server-side audio for the cellular
+                    // leg. App-side calls don't need this — they're caught
+                    // by the Zygisk hook.
+                    if (mVoiceCapture != null && !mVoiceCapture.start()) {
+                        emitError("voice_capture", "UNAVAILABLE",
+                            "CAPTURE_AUDIO_OUTPUT not granted; install APK as priv-app");
+                    }
                     break;
                 case TelephonyManager.CALL_STATE_IDLE:
                 default:
                     stateName = "IDLE";
+                    if (mVoiceCapture != null) mVoiceCapture.stop();
                     break;
             }
 
