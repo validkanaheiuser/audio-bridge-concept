@@ -15,7 +15,8 @@
       "Bash(git *)",
       "Bash(command -v python)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('/c/Users/Hello/Desktop/audio-bridge/server/main.py'\\).read\\(\\)\\); print\\('main.py: OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py: OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py OK'\\)\")"
     ]
   }
 }

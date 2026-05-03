@@ -971,6 +971,21 @@ static void receive_virtual_mic_thread(mbedtls_net_context* net) {
                 m.object_value["command"] = SimpleJson("mute");
                 m.object_value["on"] = SimpleJson(root.getBool("on"));
                 send_to_java(m);
+            } else if(cmd == "dtmf") {
+                // Forward DTMF digits to the Java side. The string contains
+                // one or more characters in 0-9 * # A-D; TelephonyHelper
+                // dispatches each tone individually.
+                SimpleJson m;
+                m.type = SimpleJson::OBJECT;
+                m.object_value["command"] = SimpleJson("dtmf");
+                m.object_value["digits"] = SimpleJson(root.getString("digits"));
+                send_to_java(m);
+            } else if(cmd == "speakerphone") {
+                SimpleJson m;
+                m.type = SimpleJson::OBJECT;
+                m.object_value["command"] = SimpleJson("speakerphone");
+                m.object_value["on"] = SimpleJson(root.getBool("on"));
+                send_to_java(m);
             } else if(cmd == "send_sms") {
                 std::string number = root.getString("number");
                 std::string message = root.getString("message");
@@ -1415,11 +1430,83 @@ int main(int argc, char** argv) {
         std::thread speaker_thread(capture_speaker_thread, &g_net);
         std::thread mic_thread(receive_virtual_mic_thread, &g_net);
         
-        // Connection watchdog: periodically send ping to detect dead connections
+        // Connection watchdog: periodically send ping to detect dead
+        // connections. Also piggybacks a "health" status frame every cycle
+        // so the dashboard can show CPU/RAM/uptime for the daemon process
+        // without a second channel. CPU% is computed from a delta of
+        // utime+stime (ticks); first sample is bootstrap and emits 0.
+        time_t startup_epoch = time(nullptr);
+        unsigned long long prev_cpu_ticks = 0;
+        time_t              prev_cpu_wall = 0;
+        long hz = sysconf(_SC_CLK_TCK);
+        if (hz <= 0) hz = 100;
         while(g_running && g_connected) {
             sleep(10);
             if(!g_connected) break;
-            
+
+            // ── Resource stats ─────────────────────────────────────────
+            unsigned long long utime = 0, stime = 0, rss_kb = 0;
+            if (FILE* fs = fopen("/proc/self/stat", "r")) {
+                // Format: pid (comm) state ppid ... 14:utime 15:stime ...
+                char buf[1024];
+                size_t n = fread(buf, 1, sizeof(buf) - 1, fs);
+                fclose(fs);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    // Skip past "(comm)" — comm can contain spaces.
+                    char* rp = strrchr(buf, ')');
+                    if (rp) {
+                        // Fields after comm are space-separated; utime is
+                        // field 12 in the post-comm sequence (state=0,
+                        // ppid=1, ..., utime=11, stime=12 zero-indexed).
+                        rp += 2;
+                        unsigned long long fields[16] = {0};
+                        int idx = 0;
+                        char* tok = strtok(rp, " ");
+                        while (tok && idx < 16) {
+                            fields[idx++] = strtoull(tok, nullptr, 10);
+                            tok = strtok(nullptr, " ");
+                        }
+                        utime = fields[11];
+                        stime = fields[12];
+                    }
+                }
+            }
+            if (FILE* fs = fopen("/proc/self/status", "r")) {
+                char line[256];
+                while (fgets(line, sizeof(line), fs)) {
+                    if (strncmp(line, "VmRSS:", 6) == 0) {
+                        rss_kb = strtoull(line + 6, nullptr, 10);
+                        break;
+                    }
+                }
+                fclose(fs);
+            }
+            time_t now_wall = time(nullptr);
+            unsigned long long cpu_ticks = utime + stime;
+            double cpu_pct = 0.0;
+            if (prev_cpu_wall != 0 && now_wall > prev_cpu_wall && hz > 0) {
+                double dticks = (double)(cpu_ticks - prev_cpu_ticks);
+                double dsecs  = (double)(now_wall - prev_cpu_wall);
+                cpu_pct = (dticks / hz) / dsecs * 100.0;
+                if (cpu_pct < 0) cpu_pct = 0;
+            }
+            prev_cpu_ticks = cpu_ticks;
+            prev_cpu_wall  = now_wall;
+
+            SimpleJson health;
+            health.type = SimpleJson::OBJECT;
+            health.object_value["type"]      = SimpleJson("health");
+            health.object_value["cpu_pct"]   = SimpleJson((double)cpu_pct);
+            health.object_value["rss_kb"]    = SimpleJson((double)rss_kb);
+            health.object_value["uptime_s"]  = SimpleJson((double)(now_wall - startup_epoch));
+            {
+                std::lock_guard<std::mutex> lk(g_status_mutex);
+                g_status_queue.push(health.toString());
+                g_status_pending = true;
+            }
+            g_status_cv.notify_one();
+
             // Send a ping frame to check if connection is alive
             if(!send_frame(&g_net, T_PING, nullptr, 0)) {
                 LOGW("Connection watchdog: ping failed, server appears to be down");

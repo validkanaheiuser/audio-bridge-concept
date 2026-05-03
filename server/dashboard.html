@@ -212,6 +212,95 @@
            font-weight: 700; letter-spacing: 0.03em; text-align: center;
            margin: 0.6rem 0 1.4rem; color: var(--good); }
 
+  /* search + compact toggle for the device list */
+  .device-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center; }
+  .device-toolbar input { flex: 1; padding: 0.55rem 0.7rem; font-size: 0.82rem;
+    border-radius: 8px; background: var(--input-bg); color: var(--text);
+    border: 1px solid transparent; outline: none; }
+  .device-toolbar input:focus { border-color: var(--border-strong); background: var(--chip); }
+  .device-toolbar .icon-btn { flex: 0 0 auto; padding: 0.5rem 0.6rem; font-size: 0.75rem;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--chip);
+    color: var(--dim); cursor: pointer; transition: all 0.15s; }
+  .device-toolbar .icon-btn.on { color: var(--text); border-color: var(--border-strong); background: var(--chip-hover); }
+
+  /* compact mode: tighter spacing, sparkline hidden */
+  .devices.compact .device { padding: 0.55rem 0.75rem; }
+  .devices.compact .spark, .devices.compact .chips { display: none; }
+  .devices.compact .device-meta { font-size: 0.66rem; }
+
+  /* alias edit affordance */
+  .device-alias { background: transparent; border: none; color: inherit;
+    font: inherit; padding: 0; width: 100%; outline: none;
+    border-bottom: 1px dashed transparent; }
+  .device-alias:hover, .device-alias:focus { border-bottom-color: var(--border-strong); }
+
+  /* dual sparkline grid (spk fps + rtt) */
+  .spark-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-top: 0.55rem; }
+  .spark-grid .spark { margin-top: 0; }
+  .spark-grid .spark-label { font-size: 0.6rem; color: var(--muted);
+    text-transform: lowercase; letter-spacing: 0.04em;
+    font-family: 'JetBrains Mono', monospace; margin-bottom: 0.15rem; }
+
+  /* DND toggle in header */
+  .dnd-toggle { width: 42px; height: 42px; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--border); cursor: pointer;
+    display: grid; place-items: center; color: var(--text); position: relative; }
+  .dnd-toggle:hover { background: var(--chip); border-color: var(--border-strong); }
+  .dnd-toggle svg { width: 18px; height: 18px; }
+  .dnd-toggle.on { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+  .dnd-toggle.on::after { content: ''; position: absolute; left: 8px; right: 8px;
+    top: 50%; height: 2px; background: currentColor; transform: rotate(-25deg); border-radius: 2px; }
+
+  /* DTMF dialpad inside the call modal */
+  .dialpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem;
+    margin: 0.6rem 0 0.9rem; }
+  .dialpad button { padding: 0.7rem 0; font-size: 1.05rem; font-family: 'JetBrains Mono', monospace;
+    background: var(--chip); color: var(--text); border-radius: 10px; border: 1px solid var(--border);
+    text-transform: none; letter-spacing: normal; }
+  .dialpad button:hover:not(:disabled) { background: var(--chip-hover); border-color: var(--border-strong); }
+  .dialpad button:active { transform: translateY(1px); }
+  .dtmf-history { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+    color: var(--dim); text-align: center; min-height: 1.2em; margin-bottom: 0.3rem;
+    word-break: break-all; }
+
+  /* SMS conversation view */
+  .convo-empty { padding: 1.2rem 1rem; color: var(--muted); font-size: 0.82rem;
+                 text-align: center; border: 1px dashed var(--border); border-radius: 10px;
+                 margin-bottom: 0.75rem; }
+  .convo-list { display: flex; flex-direction: column; gap: 0.4rem;
+                max-height: 220px; overflow-y: auto; margin-bottom: 0.75rem; }
+  .convo-thread { padding: 0.6rem 0.75rem; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--chip); cursor: pointer; transition: all 0.12s; }
+  .convo-thread:hover { background: var(--chip-hover); border-color: var(--border-strong); }
+  .convo-thread.selected { border-color: var(--text); background: var(--chip-hover); }
+  .convo-counter { display: flex; justify-content: space-between; align-items: baseline; }
+  .convo-num { font-weight: 600; font-size: 0.85rem; }
+  .convo-time { font-size: 0.65rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+  .convo-snippet { font-size: 0.74rem; color: var(--dim); margin-top: 0.2rem;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .convo-thread.unread .convo-num::before { content: '●'; color: var(--good);
+    margin-right: 0.4rem; font-size: 0.7em; vertical-align: middle; }
+
+  .convo-pane { border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: 0.4rem; }
+  .convo-msgs { max-height: 200px; overflow-y: auto; display: flex;
+    flex-direction: column; gap: 0.35rem; padding: 0.2rem 0.1rem; margin-bottom: 0.5rem; }
+  .msg { max-width: 80%; padding: 0.45rem 0.7rem; border-radius: 12px;
+    font-size: 0.82rem; line-height: 1.35; word-break: break-word; }
+  .msg .ts { display: block; font-size: 0.6rem; color: var(--muted);
+    margin-top: 0.2rem; font-family: 'JetBrains Mono', monospace; }
+  .msg.in  { align-self: flex-start; background: var(--chip); border: 1px solid var(--border); }
+  .msg.out { align-self: flex-end;   background: rgba(74,222,128,0.1);
+             border: 1px solid rgba(74,222,128,0.25); color: var(--text); }
+
+  /* speakerphone toggle button state */
+  button.spk-on { color: var(--good); border-color: rgba(74,222,128,0.4); }
+
+  /* daemon stats chip row (smaller, monospace) */
+  .stats { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem;
+           font-size: 0.62rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+  .stats span { padding: 0.1rem 0.45rem; border-radius: 999px;
+                background: var(--input-bg); border: 1px solid var(--border); }
+
   @media (max-width: 820px) {
     body { padding: 1.5rem 1rem 3rem; }
     .grid { grid-template-columns: 1fr; }
@@ -230,6 +319,13 @@
     </div>
     <div class="top-right">
       <div class="connection offline" id="conn"><span class="dot"></span><span id="conn-text">offline</span></div>
+      <button class="dnd-toggle" id="dnd-toggle" title="do not disturb (silence ringtone, title flash, system notifications)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+      </button>
       <button class="theme-toggle" id="theme-toggle">
         <svg id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round">
@@ -242,6 +338,10 @@
   <div class="grid">
     <div class="card">
       <div class="label">devices</div>
+      <div class="device-toolbar">
+        <input type="text" id="device-search" placeholder="search · / to focus" autocomplete="off">
+        <button class="icon-btn" id="btn-compact" type="button" title="compact list">≡</button>
+      </div>
       <div class="devices" id="devices">
         <div class="empty">no devices connected · configure the daemon on your phone</div>
       </div>
@@ -282,12 +382,19 @@
 
     <div class="card">
       <div class="label">sms</div>
-      <div class="field"><label>recipient</label>
+      <div class="convo-list" id="convo-list">
+        <div class="convo-empty">no conversations yet</div>
+      </div>
+      <div class="convo-pane" id="convo-pane" style="display:none;">
+        <div class="convo-msgs" id="convo-msgs"></div>
+      </div>
+      <div class="field"><label id="sms-recipient-label">recipient</label>
         <input type="tel" id="sms-number" placeholder="+1234567890"></div>
       <div class="field"><label>message</label>
         <textarea id="sms-message" placeholder="type a message"></textarea></div>
       <div class="btn-row">
         <button class="btn-primary" id="btn-sms" disabled>send</button>
+        <button id="btn-sms-new" type="button" title="new conversation">new</button>
       </div>
     </div>
 
@@ -321,9 +428,35 @@
     <div class="number" id="call-number">+1234567890</div>
     <div class="sub" id="call-device">via device</div>
     <div class="timer" id="call-timer">00:00</div>
+    <div class="dtmf-history" id="dtmf-history"></div>
+    <div class="dialpad" id="dialpad">
+      <button data-d="1">1</button><button data-d="2">2</button><button data-d="3">3</button>
+      <button data-d="4">4</button><button data-d="5">5</button><button data-d="6">6</button>
+      <button data-d="7">7</button><button data-d="8">8</button><button data-d="9">9</button>
+      <button data-d="*">*</button><button data-d="0">0</button><button data-d="#">#</button>
+    </div>
     <div class="btn-row">
       <button id="btn-mute">mute</button>
+      <button id="btn-spk" type="button">speaker</button>
       <button class="btn-danger" id="btn-hangup">hang up</button>
+    </div>
+  </div>
+</div>
+
+<!-- call-waiting modal: shown when a second call arrives during an
+     active call. Wired to the documented call_waiting event in
+     server/protocol.md. The daemon side does not emit this yet
+     (TelephonyHelper tracks one call at a time); the surface lives
+     here so the action plumbing is in place when it does. -->
+<div class="modal-scrim" id="modal-cw">
+  <div class="modal">
+    <h2>call waiting</h2>
+    <div class="number" id="cw-incoming">+1234567890</div>
+    <div class="sub" id="cw-active">currently with unknown</div>
+    <div class="btn-row">
+      <button class="btn-good"   id="btn-cw-hold">hold + answer</button>
+      <button class="btn-primary" id="btn-cw-swap">hang up + answer</button>
+      <button class="btn-danger" id="btn-cw-ignore">ignore</button>
     </div>
   </div>
 </div>
@@ -427,6 +560,183 @@ function paintAudioCard(show) {
   if (!show) stopAudio();
 }
 
+/* ─── ringtone, title flash, browser notification ───────── */
+/* All three are gated on a single first-user-gesture flag because:
+     - HTMLMediaElement / WebAudio playback is blocked by the autoplay
+       policy until the page receives a real user interaction.
+     - Notification.requestPermission must be called from a user gesture
+       on iOS Safari and (since Chrome 80) is heavily throttled when not.
+   We arm everything on the first click or keypress, then fire-and-forget
+   on subsequent state changes. */
+let __abAudioPrimed = false;
+let __abRingCtx     = null;
+let __abRingTimer   = null;
+let __abTitleTimer  = null;
+let __abTitleAlt    = false;
+const __AB_BASE_TITLE = document.title;
+let __abNotif        = null;
+let __abLastNotifKey = null;
+
+function abPrimeUserGestures() {
+  if (__abAudioPrimed) return;
+  __abAudioPrimed = true;
+  if ('Notification' in window && Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch (e) {}
+  }
+}
+window.addEventListener('click',   abPrimeUserGestures, { capture: true });
+window.addEventListener('keydown', abPrimeUserGestures, { capture: true });
+
+/* WebAudio ringtone — synthesises the classic two-tone (~440/480 Hz)
+   1.5 s on / 2.5 s off pattern. No external asset to ship. Idempotent:
+   calling startRing() while a ring is already running is a no-op. */
+function startRing() {
+  if (__abRingTimer || !__abAudioPrimed) return;
+  try {
+    __abRingCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (e) { return; }
+  const burst = () => {
+    const ctx = __abRingCtx;
+    if (!ctx || ctx.state === 'closed') return;
+    const t0 = ctx.currentTime;
+    [440, 480].forEach((hz) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = hz;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(0.12, t0 + 0.04);
+      g.gain.linearRampToValueAtTime(0,    t0 + 1.45);
+      o.connect(g).connect(ctx.destination);
+      o.start(t0);
+      o.stop(t0 + 1.5);
+    });
+  };
+  burst();
+  __abRingTimer = setInterval(burst, 4000);
+}
+function stopRing() {
+  if (__abRingTimer) { clearInterval(__abRingTimer); __abRingTimer = null; }
+  if (__abRingCtx)   { try { __abRingCtx.close(); } catch (e) {} __abRingCtx = null; }
+}
+
+/* Tab-title flash — alternates with the original title every 1 s while
+   ringing. Only flashes when the tab is hidden so the active operator
+   isn't distracted by a constantly-changing title. */
+function startTitleFlash(label) {
+  stopTitleFlash();
+  __abTitleAlt = false;
+  __abTitleTimer = setInterval(() => {
+    if (!document.hidden) {  // foreground: stop flashing, restore
+      stopTitleFlash();
+      return;
+    }
+    __abTitleAlt = !__abTitleAlt;
+    document.title = __abTitleAlt
+      ? ('📞 incoming · ' + label)
+      : __AB_BASE_TITLE;
+  }, 1000);
+}
+function stopTitleFlash() {
+  if (__abTitleTimer) { clearInterval(__abTitleTimer); __abTitleTimer = null; }
+  document.title = __AB_BASE_TITLE;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    stopTitleFlash();
+    abClearNotification();   // dismiss the toast once the tab is in front
+  }
+});
+
+/* Browser system notification — only shown when the tab is hidden, so
+   we don't double up with the modal that's already in front of the
+   operator. requireInteraction keeps it pinned until clicked. */
+function abNotifyIncoming(deviceLabel, number) {
+  if (!('Notification' in window))               return;
+  if (Notification.permission !== 'granted')     return;
+  if (!document.hidden)                          return;
+  const key = deviceLabel + '|' + number;
+  if (key === __abLastNotifKey)                  return;   // already showing
+  abClearNotification();
+  __abLastNotifKey = key;
+  try {
+    __abNotif = new Notification('Incoming call · ' + deviceLabel, {
+      body: number || 'unknown',
+      tag:  'audio-bridge-incoming',
+      requireInteraction: true,
+    });
+    __abNotif.onclick = () => {
+      try { window.focus(); } catch (e) {}
+      abClearNotification();
+    };
+  } catch (e) {}
+}
+function abClearNotification() {
+  if (__abNotif) {
+    try { __abNotif.close(); } catch (e) {}
+    __abNotif = null;
+  }
+  __abLastNotifKey = null;
+}
+
+/* One entry point called from refreshCallUI() on every render — picks
+   the correct on/off state for ring + flash + notif based on the
+   selected device's call state. Keeps all three in lock-step with the
+   modal so we can never have a stuck ringtone after the call ends. */
+function applyRingingFx(dev, call) {
+  const ringing = call && call.state === 'RINGING' && call.direction === 'incoming';
+  // Favicon flips regardless of DND — it's a passive visual cue.
+  setFavicon(ringing);
+  if (ringing && !__abDnd) {
+    startRing();
+    startTitleFlash(call.number || 'incoming');
+    abNotifyIncoming(aliasGet(dev.id) || dev.name || dev.id, call.number || 'unknown');
+  } else {
+    stopRing();
+    stopTitleFlash();
+    abClearNotification();
+  }
+}
+
+/* ─── call-waiting modal ────────────────────────────────── */
+let __abCwActiveDeviceId = null;
+function showCallWaitingModal(deviceId, payload) {
+  __abCwActiveDeviceId = deviceId;
+  document.getElementById('cw-incoming').textContent =
+    payload.incoming_number || 'unknown';
+  document.getElementById('cw-active').textContent =
+    'currently with ' + (payload.active_number || 'unknown');
+  document.getElementById('modal-cw').classList.add('open');
+  // Re-use the ringtone for waiting beep (subtler would be nicer but
+  // this matches the "important interrupt" pattern of stock dialers).
+  startRing();
+}
+function closeCallWaitingModal() {
+  document.getElementById('modal-cw').classList.remove('open');
+  __abCwActiveDeviceId = null;
+  // If no other ringing context, stop the ring. applyRingingFx on the
+  // next state_update will resync if a regular RINGING is also active.
+  stopRing();
+}
+document.getElementById('btn-cw-hold').onclick = () => {
+  if (__abCwActiveDeviceId) {
+    cmd({ command: 'hold_and_answer', device_id: __abCwActiveDeviceId });
+  }
+  closeCallWaitingModal();
+};
+document.getElementById('btn-cw-swap').onclick = () => {
+  if (__abCwActiveDeviceId) {
+    cmd({ command: 'hangup_and_answer', device_id: __abCwActiveDeviceId });
+  }
+  closeCallWaitingModal();
+};
+document.getElementById('btn-cw-ignore').onclick = () => {
+  if (__abCwActiveDeviceId) {
+    cmd({ command: 'ignore_waiting', device_id: __abCwActiveDeviceId });
+  }
+  closeCallWaitingModal();
+};
+
 /* ─── render ────────────────────────────────────────────── */
 function badge(call) {
   if (!call || !call.state || call.state === 'IDLE') return '';
@@ -446,7 +756,7 @@ function pushSpark(id, v) {
   if (a.length > SPARK_LEN) a.shift();
   return a;
 }
-function drawSpark(canvas, points) {
+function drawSpark(canvas, points, colorVar) {
   if (!canvas || !canvas.getContext) return;
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -455,11 +765,15 @@ function drawSpark(canvas, points) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (!points.length) return;
-  // Y-scale: max(50fps, observed peak). Speaker is typically 50fps (20ms frames).
-  const peak = Math.max(50, ...points);
+  // Y-scale: keep a sensible floor (50 fps for speaker, 100 ms for rtt)
+  // so a stable signal renders as a flat line in the middle, not pinned
+  // to the top.
+  const isRtt = colorVar === '--warn';
+  const floor = isRtt ? 100 : 50;
+  const peak  = Math.max(floor, ...points);
   const stepX = w / Math.max(1, SPARK_LEN - 1);
   const baseColor = getComputedStyle(document.documentElement)
-    .getPropertyValue('--good').trim() || '#4ade80';
+    .getPropertyValue(colorVar || '--good').trim() || '#4ade80';
   ctx.strokeStyle = baseColor;
   ctx.lineWidth = 1.4;
   ctx.beginPath();
@@ -487,27 +801,76 @@ function pulseClass(h) {
   return '';                         // green
 }
 
+/* Per-device rolling RTT history (separate buffer from spk_fps so the
+   two sparklines are independent). Same SPARK_LEN cap. */
+const rttHistory = {};   // { [deviceId]: number[] }
+function pushRtt(id, v) {
+  if (!rttHistory[id]) rttHistory[id] = [];
+  const a = rttHistory[id];
+  a.push(v);
+  if (a.length > SPARK_LEN) a.shift();
+  return a;
+}
+
+/* Format helpers for daemon resource stats. */
+function fmtBytes(kb) {
+  if (!kb) return '0';
+  if (kb < 1024) return kb + 'k';
+  return (kb / 1024).toFixed(1) + 'M';
+}
+function fmtUptime(s) {
+  if (!s) return '0s';
+  if (s < 60)    return s + 's';
+  if (s < 3600)  return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
 function renderDevices(devices) {
   devicesById = {};
   devices.forEach(d => devicesById[d.id] = d);
 
   const container = document.getElementById('devices');
+  // Compact-mode class is applied per-render so localStorage flips take
+  // effect on the next state_update without manual repaint.
+  container.classList.toggle('compact', !!__abCompact);
+
   if (!devices || devices.length === 0) {
     container.innerHTML = '<div class="empty">no devices connected · configure the daemon on your phone</div>';
     selectedDevice = null;
-    // Reset spark history for vanished devices
     for (const k of Object.keys(sparkHistory)) delete sparkHistory[k];
+    for (const k of Object.keys(rttHistory))   delete rttHistory[k];
     refreshCallUI();
     return;
   }
+
+  // Search filter — case-insensitive substring match against id, name,
+  // alias, brand. Empty string matches everything. Filtered devices are
+  // skipped in render but stay in devicesById so command targeting still
+  // works for whichever device is selected.
+  const q = (__abSearch || '').toLowerCase().trim();
+  const matches = (d) => {
+    if (!q) return true;
+    const alias = aliasGet(d.id) || '';
+    return [d.id, d.name, alias, d.brand]
+      .filter(Boolean)
+      .some(v => String(v).toLowerCase().includes(q));
+  };
+
   let foundSelected = false;
   container.innerHTML = '';
-  const sparkCanvases = [];   // (canvas, points) pairs to paint after attach
+  const sparkCanvases = [];
+  let visibleCount = 0;
   for (const d of devices) {
+    if (!matches(d)) continue;
+    visibleCount++;
     if (selectedDevice === d.id) foundSelected = true;
     const call = d.call || {};
     const h = d.health || {};
-    const points = pushSpark(d.id, h.spk_fps || 0);
+    const points  = pushSpark(d.id, h.spk_fps || 0);
+    const rtts    = (h.rtt_ms != null) ? pushRtt(d.id, h.rtt_ms) : (rttHistory[d.id] || []);
+    const aliasV  = aliasGet(d.id);
+    const display = aliasV || d.name || d.id;
 
     const item = document.createElement('div');
     const stale = !!h.stale;
@@ -515,7 +878,7 @@ function renderDevices(devices) {
       + (selectedDevice === d.id ? ' selected' : '')
       + (stale ? ' stale' : '');
 
-    // Build chip row from health + call.
+    // Status chip row.
     const chips = [];
     if (h.rtt_ms != null) {
       chips.push(`<span class="chip rtt ${rttClass(h.rtt_ms)}">rtt ${h.rtt_ms}ms</span>`);
@@ -534,7 +897,6 @@ function renderDevices(devices) {
     if ((h.spk_fps || 0) > 0.5) {
       chips.push(`<span class="chip">${Math.round(h.spk_fps)} fps rx</span>`);
     }
-    // Active 3G call without concurrent data — operator must use Wi-Fi.
     if (call.state === 'ACTIVE' && call.data_concurrent_with_voice === false) {
       chips.push(`<span class="chip warn">cellular call · data suspended</span>`);
     }
@@ -543,31 +905,74 @@ function renderDevices(devices) {
       chips.push(`<span class="chip danger">no traffic · ${ago}s</span>`);
     }
 
+    // Daemon resource stats (smaller monospace row, only when reported).
+    let statsHtml = '';
+    if (h.cpu_pct != null && (h.cpu_pct > 0 || h.rss_kb > 0 || h.uptime_s > 0)) {
+      statsHtml = '<div class="stats">'
+        + `<span>cpu ${h.cpu_pct.toFixed(1)}%</span>`
+        + `<span>rss ${fmtBytes(h.rss_kb)}</span>`
+        + `<span>up ${fmtUptime(h.uptime_s)}</span>`
+        + '</div>';
+    }
+
+    // Render. The alias is in a contentEditable span — single click to
+    // edit, Enter or blur to save. stopPropagation on click so clicking
+    // the name doesn't bubble up and re-select the device.
     item.innerHTML =
       `<div class="device-head">` +
         `<span class="pulse ${pulseClass(h)}"></span>` +
-        `<div class="device-name">${d.name || d.id}</div>` +
+        `<span class="device-name device-alias" data-id="${d.id}" ` +
+              `contenteditable="true" spellcheck="false">${escapeHtml(display)}</span>` +
       `</div>` +
       `<div class="device-meta">${d.id}${d.android ? ' · android ' + d.android : ''}` +
         `${d.brand ? ' · ' + d.brand : ''}</div>` +
       `<div class="device-state">${(call.state || 'idle').toLowerCase()}` +
         `${call.number ? ' · ' + call.number : ''}</div>` +
       (chips.length ? `<div class="chips">${chips.join('')}</div>` : '') +
-      `<canvas class="spark" data-spark-id="${d.id}"></canvas>` +
+      statsHtml +
+      `<div class="spark-grid">` +
+        `<div><div class="spark-label">spk fps</div><canvas class="spark" data-spark="spk"></canvas></div>` +
+        `<div><div class="spark-label">rtt ms</div><canvas class="spark" data-spark="rtt"></canvas></div>` +
+      `</div>` +
       badge(call);
-    item.onclick = () => { selectedDevice = d.id; renderDevices(devices); };
+    item.onclick = (ev) => {
+      // Don't switch selection when the user is editing the alias.
+      if (ev.target.classList && ev.target.classList.contains('device-alias')) return;
+      selectedDevice = d.id;
+      renderDevices(devices);
+    };
     container.appendChild(item);
-    sparkCanvases.push([item.querySelector('canvas'), points]);
+    sparkCanvases.push([
+      item.querySelector('canvas[data-spark="spk"]'), points, '--good',
+    ]);
+    sparkCanvases.push([
+      item.querySelector('canvas[data-spark="rtt"]'), rtts,   '--warn',
+    ]);
   }
-  // Drop history for devices that are no longer present.
+
+  if (visibleCount === 0) {
+    container.innerHTML = '<div class="empty">no matches for "' + escapeHtml(q) + '"</div>';
+  }
+
+  // Drop sparkline history for devices that vanished completely.
   const live = new Set(devices.map(d => d.id));
   for (const k of Object.keys(sparkHistory)) if (!live.has(k)) delete sparkHistory[k];
+  for (const k of Object.keys(rttHistory))   if (!live.has(k)) delete rttHistory[k];
 
-  // Paint after attach so clientWidth is real.
-  for (const [c, pts] of sparkCanvases) drawSpark(c, pts);
+  for (const [c, pts, varName] of sparkCanvases) drawSpark(c, pts, varName);
 
-  if (!foundSelected) selectedDevice = devices[0].id;
+  if (!foundSelected && devices.length > 0) {
+    // Prefer a visible device if any; otherwise default to the first.
+    const visible = devices.find(matches);
+    selectedDevice = (visible || devices[0]).id;
+  }
   refreshCallUI();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
 }
 
 function refreshCallUI() {
@@ -576,9 +981,17 @@ function refreshCallUI() {
   document.getElementById('btn-dial').disabled = !has;
   document.getElementById('btn-sms').disabled  = !has;
 
-  if (!has) { closeAllModals(); paintAudioCard(false); return; }
+  if (!has) {
+    closeAllModals();
+    paintAudioCard(false);
+    applyRingingFx(null, null);   // ensure ring/flash/notif are off
+    return;
+  }
 
   const call = d.call || { state: 'IDLE' };
+  // Ring + tab-title flash + system notification — derived from call
+  // state on every render, so we can never end up with a stuck ringtone.
+  applyRingingFx(d, call);
   switch (call.state) {
     case 'RINGING':
       if (call.direction === 'incoming') {
@@ -627,8 +1040,19 @@ function connectUI() {
       } else if (k === 'sms_received') {
         toast('event', 'SMS from ' + p.sender, p.message);
         addLog(`sms from ${p.sender}: ${p.message}`, 'event');
+        convoIngest(data.device_id, p.sender, p.message,
+                    p.timestamp || Date.now(), 'in');
       } else if (k === 'sms_sent') {
         addLog(`sms sent · ${p.result || 'ok'}`, 'event');
+        // No body in sms_sent; the outbound message is already in the
+        // store from when the user clicked send.
+      } else if (k === 'call_waiting') {
+        // Documented in protocol.md, not yet emitted by TelephonyHelper
+        // — visual surface is wired so the daemon-side follow-up
+        // doesn't need any further dashboard changes.
+        const did = data.device_id || (selectedDevice || '');
+        showCallWaitingModal(did, p);
+        addLog(`call waiting · ${p.incoming_number || 'unknown'}`, 'event');
       }
     }
   };
@@ -753,6 +1177,345 @@ function stopAudio() {
 document.getElementById('btn-listen').onclick = () => startAudio(false);
 document.getElementById('btn-mic').onclick    = () => startAudio(true);
 document.getElementById('btn-stop').onclick   = () => stopAudio();
+
+/* ─────────────────────────────────────────────────────────────────────
+   New UX features (aliases, DND, favicon, search/compact, keyboard
+   shortcuts, SMS conversations, DTMF, speakerphone, event backfill)
+   ───────────────────────────────────────────────────────────────────── */
+
+/* Aliases: per-device-id rename, persisted to localStorage. The renderer
+   uses aliasGet(id) to resolve the display name; aliasSet writes through
+   and triggers a re-render so the search/title update immediately. */
+const ALIAS_KEY = 'ab-aliases-v1';
+function aliasMap() {
+  try { return JSON.parse(localStorage.getItem(ALIAS_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function aliasGet(id) { return aliasMap()[id] || ''; }
+function aliasSet(id, name) {
+  const m = aliasMap();
+  if (name && name.trim()) m[id] = name.trim().slice(0, 60);
+  else delete m[id];
+  try { localStorage.setItem(ALIAS_KEY, JSON.stringify(m)); } catch (e) {}
+}
+// Editable name handlers — installed once via event delegation on the
+// devices container so they survive every renderDevices() repaint.
+(function () {
+  const el = document.getElementById('devices');
+  if (!el) return;
+  el.addEventListener('keydown', (ev) => {
+    if (!ev.target.classList.contains('device-alias')) return;
+    if (ev.key === 'Enter') { ev.preventDefault(); ev.target.blur(); }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.target.textContent = aliasGet(ev.target.dataset.id)
+                            || (devicesById[ev.target.dataset.id] || {}).name
+                            || ev.target.dataset.id;
+      ev.target.blur();
+    }
+  });
+  el.addEventListener('blur', (ev) => {
+    if (!ev.target.classList.contains('device-alias')) return;
+    const id = ev.target.dataset.id;
+    const v  = ev.target.textContent.trim();
+    const dev = devicesById[id] || {};
+    // Only persist if the value actually differs from the device's
+    // reported name (so clearing the alias removes it).
+    aliasSet(id, v && v !== dev.name ? v : '');
+  }, true);
+})();
+
+/* Search & compact-mode toolbar wiring. */
+let __abSearch  = '';
+let __abCompact = (function () {
+  try { return localStorage.getItem('ab-compact') === '1'; } catch (e) { return false; }
+})();
+(function () {
+  const inp = document.getElementById('device-search');
+  const btn = document.getElementById('btn-compact');
+  if (inp) {
+    inp.addEventListener('input', () => {
+      __abSearch = inp.value;
+      // Re-render the current state without waiting on a server tick.
+      renderDevices(Object.values(devicesById));
+    });
+  }
+  if (btn) {
+    btn.classList.toggle('on', __abCompact);
+    btn.addEventListener('click', () => {
+      __abCompact = !__abCompact;
+      try { localStorage.setItem('ab-compact', __abCompact ? '1' : '0'); } catch (e) {}
+      btn.classList.toggle('on', __abCompact);
+      renderDevices(Object.values(devicesById));
+    });
+  }
+})();
+
+/* Do-not-disturb toggle. When on, applyRingingFx skips the ring/title/
+   notification but the modal still opens — operator chose to keep the
+   visual surface. Persisted across reloads. */
+let __abDnd = (function () {
+  try { return localStorage.getItem('ab-dnd') === '1'; } catch (e) { return false; }
+})();
+(function () {
+  const btn = document.getElementById('dnd-toggle');
+  if (!btn) return;
+  btn.classList.toggle('on', __abDnd);
+  btn.addEventListener('click', () => {
+    __abDnd = !__abDnd;
+    try { localStorage.setItem('ab-dnd', __abDnd ? '1' : '0'); } catch (e) {}
+    btn.classList.toggle('on', __abDnd);
+    if (__abDnd) {
+      // Immediately silence anything that's already ringing.
+      stopRing(); stopTitleFlash(); abClearNotification();
+    } else {
+      // Flip back to whatever the current state asks for.
+      refreshCallUI();
+    }
+  });
+})();
+
+/* Favicon flash — swaps to a red dot SVG while ringing. SVG data URLs
+   work without a network round-trip and adapt to retina displays. */
+const FAVICON_BASE = (function () {
+  const link = document.querySelector('link[rel~="icon"]');
+  return link ? link.href : null;
+})();
+function setFavicon(ringing) {
+  let link = document.querySelector('link[rel~="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  if (ringing) {
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+              + "<circle cx='16' cy='16' r='14' fill='#ef4444'/></svg>";
+    link.href = 'data:image/svg+xml;base64,' + btoa(svg);
+  } else {
+    link.href = FAVICON_BASE || ('data:image/svg+xml;base64,' + btoa(
+      "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+      + "<rect width='32' height='32' rx='6' fill='#0d0d0d'/>"
+      + "<text x='50%' y='58%' text-anchor='middle' fill='#fff' "
+      +     "font-family='monospace' font-size='14' font-weight='700'>ab</text>"
+      + "</svg>"));
+  }
+}
+setFavicon(false);  // install our default favicon at boot
+
+/* SMS conversation store. Keyed by `${device_id}|${counterparty_number}`,
+   each entry is { device_id, number, messages: [{dir,body,ts}], unread }.
+   Persisted to localStorage so a refresh doesn't lose conversation
+   history (the server's events.jsonl backfill also re-populates inbound
+   messages on connect). */
+const CONVO_KEY = 'ab-convos-v1';
+let __abConvos = (function () {
+  try { return JSON.parse(localStorage.getItem(CONVO_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+})();
+let __abConvoSelected = null;   // "deviceId|number"
+function convoSave() {
+  try { localStorage.setItem(CONVO_KEY, JSON.stringify(__abConvos)); } catch (e) {}
+}
+function convoKey(deviceId, number) { return (deviceId || '') + '|' + (number || ''); }
+function convoIngest(deviceId, number, body, ts, dir) {
+  if (!number) return;
+  const k = convoKey(deviceId, number);
+  const c = __abConvos[k] || { device_id: deviceId, number, messages: [], unread: 0 };
+  c.messages.push({ dir, body, ts });
+  if (c.messages.length > 200) c.messages.splice(0, c.messages.length - 200);
+  if (dir === 'in' && __abConvoSelected !== k) c.unread = (c.unread || 0) + 1;
+  __abConvos[k] = c;
+  convoSave();
+  renderConvos();
+}
+function convoSelect(k) {
+  __abConvoSelected = k;
+  if (__abConvos[k]) { __abConvos[k].unread = 0; convoSave(); }
+  // Pre-fill the recipient input.
+  const numEl = document.getElementById('sms-number');
+  if (numEl && __abConvos[k]) numEl.value = __abConvos[k].number;
+  renderConvos();
+}
+function renderConvos() {
+  const list = document.getElementById('convo-list');
+  const pane = document.getElementById('convo-pane');
+  const msgs = document.getElementById('convo-msgs');
+  if (!list || !pane || !msgs) return;
+  const keys = Object.keys(__abConvos)
+    .filter(k => !selectedDevice || k.split('|')[0] === selectedDevice)
+    .sort((a, b) => {
+      const la = __abConvos[a].messages[__abConvos[a].messages.length - 1] || {};
+      const lb = __abConvos[b].messages[__abConvos[b].messages.length - 1] || {};
+      return (lb.ts || 0) - (la.ts || 0);
+    });
+  if (keys.length === 0) {
+    list.innerHTML = '<div class="convo-empty">no conversations yet</div>';
+    pane.style.display = 'none';
+    return;
+  }
+  list.innerHTML = keys.map(k => {
+    const c = __abConvos[k];
+    const last = c.messages[c.messages.length - 1] || {};
+    const sel = (k === __abConvoSelected) ? ' selected' : '';
+    const unr = (c.unread > 0) ? ' unread' : '';
+    return `<div class="convo-thread${sel}${unr}" data-k="${escapeHtml(k)}">`
+         +   `<div class="convo-counter">`
+         +     `<span class="convo-num">${escapeHtml(c.number)}</span>`
+         +     `<span class="convo-time">${last.ts ? new Date(last.ts).toLocaleTimeString() : ''}</span>`
+         +   `</div>`
+         +   `<div class="convo-snippet">${escapeHtml(last.body || '')}</div>`
+         + `</div>`;
+  }).join('');
+  list.querySelectorAll('.convo-thread').forEach(el => {
+    el.onclick = () => convoSelect(el.dataset.k);
+  });
+
+  if (__abConvoSelected && __abConvos[__abConvoSelected]) {
+    pane.style.display = '';
+    const c = __abConvos[__abConvoSelected];
+    msgs.innerHTML = c.messages.map(m =>
+      `<div class="msg ${m.dir}">${escapeHtml(m.body)}`
+      + `<span class="ts">${m.ts ? new Date(m.ts).toLocaleString() : ''}</span></div>`
+    ).join('');
+    msgs.scrollTop = msgs.scrollHeight;
+  } else {
+    pane.style.display = 'none';
+  }
+}
+// Hook the existing send button to also append to the conversation store.
+(function () {
+  const orig = document.getElementById('btn-sms').onclick;
+  document.getElementById('btn-sms').onclick = () => {
+    const num = document.getElementById('sms-number').value.trim();
+    const msg = document.getElementById('sms-message').value.trim();
+    if (num && msg && selectedDevice) {
+      convoIngest(selectedDevice, num, msg, Date.now(), 'out');
+    }
+    if (orig) orig();
+  };
+  const newBtn = document.getElementById('btn-sms-new');
+  if (newBtn) newBtn.onclick = () => {
+    __abConvoSelected = null;
+    document.getElementById('sms-number').value = '';
+    document.getElementById('sms-message').value = '';
+    document.getElementById('sms-number').focus();
+    renderConvos();
+  };
+})();
+renderConvos();
+
+/* DTMF dialpad: each button sends a single tone via the dtmf command.
+   The "history" string above the pad shows what's been sent during the
+   current call so the operator can see what they're typing into an IVR. */
+let __abDtmfHistory = '';
+function abClearDtmfHistory() { __abDtmfHistory = ''; document.getElementById('dtmf-history').textContent = ''; }
+(function () {
+  const pad = document.getElementById('dialpad');
+  if (!pad) return;
+  pad.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-d]');
+    if (!btn || !selectedDevice) return;
+    const d = btn.dataset.d;
+    cmd({ command: 'dtmf', device_id: selectedDevice, digits: d });
+    __abDtmfHistory = (__abDtmfHistory + d).slice(-32);
+    document.getElementById('dtmf-history').textContent = __abDtmfHistory;
+  });
+})();
+
+/* Speakerphone toggle. Tracked locally — the daemon doesn't currently
+   echo the route state back, so the button reflects what we asked for. */
+let __abSpeaker = false;
+(function () {
+  const btn = document.getElementById('btn-spk');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!selectedDevice) return;
+    __abSpeaker = !__abSpeaker;
+    cmd({ command: 'speakerphone', device_id: selectedDevice, on: __abSpeaker });
+    btn.classList.toggle('spk-on', __abSpeaker);
+    btn.textContent = __abSpeaker ? 'speaker on' : 'speaker';
+  });
+})();
+// Reset speaker + DTMF history whenever the in-call modal closes.
+const __ab_origCloseModals = closeAllModals;
+closeAllModals = function () {
+  __ab_origCloseModals();
+  __abSpeaker = false;
+  const sb = document.getElementById('btn-spk');
+  if (sb) { sb.classList.remove('spk-on'); sb.textContent = 'speaker'; }
+  abClearDtmfHistory();
+};
+
+/* Keyboard shortcuts:
+     /        focus search
+     Esc      close any modal / hang up if in active call
+     Enter    answer if ringing modal is open
+     m        toggle mute when in active call
+     d        toggle DND
+   Skipped when typing into an input or contentEditable. */
+document.addEventListener('keydown', (ev) => {
+  const t = ev.target;
+  const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+  if (ev.key === '/' && !inField) {
+    ev.preventDefault();
+    const s = document.getElementById('device-search');
+    if (s) { s.focus(); s.select(); }
+    return;
+  }
+  if (ev.key === 'Escape') {
+    const ring = document.getElementById('modal-ring').classList.contains('open');
+    const call = document.getElementById('modal-call').classList.contains('open');
+    if (ring) { document.getElementById('btn-reject').click(); ev.preventDefault(); }
+    else if (call) { document.getElementById('btn-hangup').click(); ev.preventDefault(); }
+    return;
+  }
+  if (inField) return;
+  if (ev.key === 'Enter'
+      && document.getElementById('modal-ring').classList.contains('open')) {
+    document.getElementById('btn-answer').click(); ev.preventDefault();
+  } else if ((ev.key === 'm' || ev.key === 'M')
+             && document.getElementById('modal-call').classList.contains('open')) {
+    document.getElementById('btn-mute').click(); ev.preventDefault();
+  } else if (ev.key === 'd' || ev.key === 'D') {
+    document.getElementById('dnd-toggle').click(); ev.preventDefault();
+  }
+});
+
+/* Event-log backfill on connect. The server persists every event to
+   events.jsonl; on first WS open we ask for the last 100 so a fresh
+   reload isn't a blank slate. Called from inside connectUI's onopen
+   wrapper below. */
+let __abBackfilled = false;
+async function backfillEvents() {
+  if (__abBackfilled) return;          // only on the very first connect
+  __abBackfilled = true;
+  try {
+    const r = await fetch('/api/events?limit=100');
+    if (!r.ok) return;
+    const j = await r.json();
+    for (const ev of (j.events || [])) {
+      // Replay through the same vocabulary as live events.
+      if (ev.kind === 'call') {
+        const p = ev.data || {};
+        addLog(`[backfill] call · ${p.state || ''}${p.direction ? ' ('+p.direction+')' : ''}`
+               + `${p.number ? ' · ' + p.number : ''}`, 'event');
+      } else if (ev.kind === 'sms_received') {
+        const p = ev.data || {};
+        convoIngest(ev.device_id, p.sender, p.message,
+                    p.timestamp || ev.ts_ms || Date.now(), 'in');
+      } else if (ev.kind === 'error') {
+        const p = ev.data || {};
+        addLog(`[backfill] error · ${p.op || ''} · ${p.code || ''}`, 'error');
+      }
+    }
+  } catch (e) {}
+}
+
+/* Wire the backfill into the existing connectUI's onopen. We monkey-
+   patch ws.onopen at construction time by wrapping connectUI's body
+   minimally — easier: trigger backfill once after page load. */
+window.addEventListener('load', () => { setTimeout(backfillEvents, 250); });
 
 connectUI();
 </script>

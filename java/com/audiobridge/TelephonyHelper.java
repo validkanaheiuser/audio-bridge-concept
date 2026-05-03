@@ -360,6 +360,64 @@ public class TelephonyHelper {
         }
     }
 
+    /**
+     * Send DTMF tones during an active call. Each character of {@code digits}
+     * is dispatched independently via {@link TelecomManager#playDtmfTone(char)}
+     * with a small inter-tone gap so IVRs can register them. Valid chars are
+     * 0–9, *, #, A–D. Invalid chars are silently dropped.
+     */
+    public void sendDtmf(String digits) {
+        if (digits == null || digits.isEmpty() || mTelecomManager == null) return;
+        // 200 ms per tone with a 60 ms gap is the standard IVR-friendly cadence.
+        // playDtmfTone is fire-and-forget; we sleep on a background thread so
+        // the IPC handler thread doesn't block.
+        final String d = digits;
+        new Thread(() -> {
+            try {
+                for (int i = 0; i < d.length(); i++) {
+                    char c = d.charAt(i);
+                    if (!isValidDtmf(c)) continue;
+                    try { mTelecomManager.getClass()
+                            .getMethod("playDtmfTone", char.class)
+                            .invoke(mTelecomManager, c); } catch (Throwable t) {
+                        // Method-not-found on very old SDKs — fall back to no-op
+                        android.util.Log.w(TAG, "playDtmfTone unavailable: " + t);
+                        return;
+                    }
+                    Thread.sleep(200);
+                    try { mTelecomManager.getClass()
+                            .getMethod("stopDtmfTone").invoke(mTelecomManager); }
+                    catch (Throwable ignored) {}
+                    Thread.sleep(60);
+                }
+            } catch (InterruptedException ie) { /* aborted, fine */ }
+            catch (Throwable t) { emitError("dtmf", "EXCEPTION", t.getMessage()); }
+        }, "DTMF-Pump").start();
+    }
+    private static boolean isValidDtmf(char c) {
+        return (c >= '0' && c <= '9') || c == '*' || c == '#'
+            || (c >= 'A' && c <= 'D') || (c >= 'a' && c <= 'd');
+    }
+
+    /** Toggle the speakerphone route during an active call. */
+    public void setSpeakerphone(boolean on) {
+        if (mAudioManager == null) {
+            emitError("speakerphone", "NO_AUDIO_MGR", "AudioManager unavailable");
+            return;
+        }
+        try {
+            mAudioManager.setSpeakerphoneOn(on);
+            android.util.Log.i(TAG, "setSpeakerphoneOn(" + on + ")");
+            // Re-emit current call state so the dashboard can refresh any
+            // speakerphone indicator we add later.
+            emitCallState(
+                mActiveNumber.isEmpty() ? "IDLE" : "ACTIVE",
+                dirString(mDir), mActiveNumber);
+        } catch (Throwable t) {
+            emitError("speakerphone", "EXCEPTION", t.getMessage());
+        }
+    }
+
     public void setMute(boolean on) {
         try {
             if (mAudioManager != null) {

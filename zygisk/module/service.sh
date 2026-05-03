@@ -4,6 +4,21 @@ LOG=/data/local/tmp/audio_bridge_service.log
 
 echo "$(date) Audio Bridge service.sh started" >> $LOG
 
+# ── Log rotation ──────────────────────────────────────────────────────────
+# These files are appended every restart and during normal operation;
+# without rotation they grow unbounded on long-running phones. Cap each
+# at ~1MB; on overflow, rename to .1 (single-generation rotation, so we
+# keep at most ~2MB total per log).
+rotate_log() {
+    f="$1"
+    if [ -f "$f" ] && [ "$(stat -c%s "$f" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv -f "$f" "${f}.1" 2>/dev/null
+    fi
+}
+rotate_log /data/local/tmp/audio_bridge.log
+rotate_log /data/local/tmp/audio_bridge_service.log
+rotate_log /data/local/tmp/audio_bridge_java.log
+
 # Auto-grant permissions (suppress errors if app not yet installed)
 pm grant com.audiobridge android.permission.CALL_PHONE 2>/dev/null
 pm grant com.audiobridge android.permission.ANSWER_PHONE_CALLS 2>/dev/null

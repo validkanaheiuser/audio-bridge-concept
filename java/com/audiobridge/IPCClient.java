@@ -164,6 +164,10 @@ public class IPCClient {
                     th.setMute(json.optBoolean("on", true));
                 } else if ("send_sms".equals(cmd)) {
                     th.sendSMS(json.getString("number"), json.getString("message"));
+                } else if ("dtmf".equals(cmd)) {
+                    th.sendDtmf(json.optString("digits", ""));
+                } else if ("speakerphone".equals(cmd)) {
+                    th.setSpeakerphone(json.optBoolean("on", true));
                 } else {
                     Log.w(TAG, "Unknown command from daemon: " + cmd);
                 }

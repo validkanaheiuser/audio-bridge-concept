@@ -63,6 +63,74 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
+
+# ─── Persistent event log (JSONL) ────────────────────────────────────────────
+# Every event broadcast to UI clients also lands here so a dashboard reload
+# (F5) can backfill recent activity instead of starting empty. JSONL because:
+# append-only is crash-safe, easy to tail with shell tools, and trivial to
+# forward to log shippers. Single-generation rotation at ~10MB; older runs
+# go to events.jsonl.1.
+EVENTS_PATH       = os.environ.get("AUDIO_BRIDGE_EVENTS",
+                                   os.path.join(os.path.dirname(__file__), "events.jsonl"))
+EVENTS_MAX_BYTES  = int(os.environ.get("AUDIO_BRIDGE_EVENTS_MAX_BYTES", str(10 * 1024 * 1024)))
+
+
+class EventStore:
+    """Append-only JSONL writer with single-generation size-based rotation."""
+
+    def __init__(self, path: str, max_bytes: int):
+        self.path = path
+        self.max_bytes = max_bytes
+
+    def append(self, event: dict) -> None:
+        try:
+            # Stamp every record with monotonic-ish ms-since-epoch so the
+            # backfill endpoint can range-query without parsing nested fields.
+            event = dict(event)
+            event.setdefault("ts_ms", int(time.time() * 1000))
+            line = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+            try:
+                if os.path.getsize(self.path) > self.max_bytes:
+                    rotated = self.path + ".1"
+                    try: os.replace(self.path, rotated)
+                    except Exception: pass
+            except FileNotFoundError:
+                pass
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:
+            log.debug("event store append: %s", e)
+
+    def tail(self, since_ms: Optional[int], limit: int,
+             device_id: Optional[str]) -> list:
+        """Return most-recent events matching the filters, oldest-first."""
+        out: list = []
+        for src in (self.path + ".1", self.path):
+            try:
+                with open(src, "r", encoding="utf-8") as f:
+                    for ln in f:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            ev = json.loads(ln)
+                        except Exception:
+                            continue
+                        if since_ms is not None and ev.get("ts_ms", 0) < since_ms:
+                            continue
+                        if device_id and ev.get("device_id") != device_id:
+                            continue
+                        out.append(ev)
+            except FileNotFoundError:
+                continue
+        # Oldest first; trim to limit by keeping the tail.
+        if limit and len(out) > limit:
+            out = out[-limit:]
+        return out
+
+
+events = EventStore(EVENTS_PATH, EVENTS_MAX_BYTES)
+
 # ─── Protocol constants ──────────────────────────────────────────────────────
 T_SPEAKER, T_VIRTUAL_MIC, T_CONTROL, T_CALL_STATUS, T_SMS, T_PING, T_PONG = range(1, 8)
 
@@ -278,6 +346,11 @@ class Device:
         self.connected_at: int = _now_ms()
         self.last_seen_at: int = _now_ms()    # any frame counts
         self.last_rtt_ms: Optional[int] = None
+        # Daemon process stats (populated from {type:"health"} frames every
+        # ~10s by the daemon's watchdog loop).
+        self.daemon_cpu_pct: float = 0.0
+        self.daemon_rss_kb: int = 0
+        self.daemon_uptime_s: int = 0
         # Map<seq, sent_ms>; we keep at most a handful of in-flight pings.
         self._ping_inflight: Dict[int, int] = {}
         self._ping_seq: int = 0
@@ -361,6 +434,21 @@ class Device:
             self._ping_inflight.pop(old_seq, None)
         await self.send_frame(T_PING, struct.pack(">I", seq))
 
+    def note_daemon_health(self, payload: dict) -> None:
+        """Absorb a {type:'health',cpu_pct,rss_kb,uptime_s} stat frame."""
+        try:
+            self.daemon_cpu_pct = float(payload.get("cpu_pct", 0.0))
+        except Exception:
+            self.daemon_cpu_pct = 0.0
+        try:
+            self.daemon_rss_kb = int(payload.get("rss_kb", 0))
+        except Exception:
+            self.daemon_rss_kb = 0
+        try:
+            self.daemon_uptime_s = int(payload.get("uptime_s", 0))
+        except Exception:
+            self.daemon_uptime_s = 0
+
     def note_pong(self, payload: bytes) -> None:
         """Match against an outstanding ping seq, compute RTT."""
         if len(payload) != 4:
@@ -407,6 +495,10 @@ class DeviceManager:
                 self.ui_clients.discard(ws)
 
     async def broadcast_event(self, event: dict) -> None:
+        # Persist before fan-out so an exception in send_json doesn't block
+        # historical record-keeping. EventStore.append is best-effort and
+        # never raises out.
+        events.append(event)
         for ws in list(self.ui_clients):
             try:
                 await ws.send_json(event)
@@ -440,6 +532,9 @@ class DeviceManager:
                         "stale": d.is_stale(),
                         "spk_fps": round(d.spk_fps, 1),
                         "mic_fps": round(d.mic_fps, 1),
+                        "cpu_pct": round(d.daemon_cpu_pct, 1),
+                        "rss_kb": d.daemon_rss_kb,
+                        "uptime_s": d.daemon_uptime_s,
                     },
                 }
                 for d in self.devices.values()
@@ -554,6 +649,12 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "type": "event", "kind": "call",
                         "device_id": device.id, "data": payload,
                     })
+                elif ptype == "health":
+                    # Daemon process metrics piggy-backed on T_CALL_STATUS.
+                    # We absorb them into the per-device health block; no
+                    # event broadcast (would spam the events log every 10s).
+                    device.note_daemon_health(payload)
+                    await mgr.broadcast_state()
                 elif ptype == "error":
                     # Phone-side operation failed — surface to dashboard.
                     log.warning("device error %s: %s", device.id, payload)
@@ -658,6 +759,16 @@ async def ws_ui(ws: WebSocket) -> None:
                     number=data.get("number"),
                     message=data.get("message"),
                 )
+            elif cmd == "dtmf":
+                # Validate server-side so daemon never sees garbage. DTMF
+                # accepts 0-9, *, #, A-D (case-insensitive). Anything else
+                # is dropped silently per RFC 4733 conventions.
+                raw = str(data.get("digits", ""))
+                clean = "".join(c for c in raw if c in "0123456789*#ABCDabcd")
+                if clean:
+                    await d.send_control("dtmf", digits=clean)
+            elif cmd == "speakerphone":
+                await d.send_control("speakerphone", on=bool(data.get("on", True)))
     except WebSocketDisconnect:
         pass
     finally:
@@ -734,6 +845,21 @@ async def ws_audio(
             pump_task.cancel()
         if listener:
             hub.remove_listener(listener)
+
+
+@app.get("/api/events")
+async def api_events(
+    since_ms: Optional[int] = Query(None, ge=0),
+    device_id: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=2000),
+) -> dict:
+    """Backfill recent events for a freshly-loaded dashboard.
+
+    Without parameters, returns the last 200 events globally. With
+    `since_ms`, returns events newer than that timestamp (paired with
+    the `ts_ms` field on each record). `device_id` narrows to one device.
+    """
+    return {"events": events.tail(since_ms, limit, device_id)}
 
 
 @app.get("/", response_class=HTMLResponse)
