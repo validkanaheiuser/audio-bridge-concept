@@ -239,6 +239,20 @@ class AudioHub:
 
 
 # ─── Device session ──────────────────────────────────────────────────────────
+# Liveness thresholds (seconds). The daemon's own watchdog also sends T_PING
+# every 10s, so a device can't go quiet for long without us noticing — but
+# we *additionally* probe from the server for RTT and to detect a one-way
+# stuck socket (Wi-Fi NAT mid-stream, etc.) where the daemon might still
+# think it's online.
+HEARTBEAT_INTERVAL_S = 10
+STALE_AFTER_S        = 30          # UI dims the row, raises a warning
+DROP_AFTER_S         = 60          # server force-closes the TCP socket
+
+
+def _now_ms() -> int:
+    return int(time.monotonic() * 1000)
+
+
 class Device:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, info: dict):
         self.reader = reader
@@ -253,9 +267,52 @@ class Device:
         self.active_number: str = ""
         self.call_started_at: int = 0         # ms epoch
         self.call_muted: bool = False
+        # Per-SIM context surfaced from TelephonyHelper.emitCallState
+        self.sim_slot: int = -1
+        self.voice_network_name: str = ""     # 2G | 3G | 4G | 5G | unknown | ""
+        self.data_concurrent_with_voice: bool = True
         self.connected: bool = True
         self.audio = AudioHub(self)
         self._write_lock = asyncio.Lock()
+        # ── Heartbeat / metrics ────────────────────────────────────────────
+        self.connected_at: int = _now_ms()
+        self.last_seen_at: int = _now_ms()    # any frame counts
+        self.last_rtt_ms: Optional[int] = None
+        # Map<seq, sent_ms>; we keep at most a handful of in-flight pings.
+        self._ping_inflight: Dict[int, int] = {}
+        self._ping_seq: int = 0
+        # Rolling counters (reset every metrics tick)
+        self._spk_frames_acc: int = 0
+        self._mic_frames_acc: int = 0
+        self.spk_fps: float = 0.0             # speaker frames/sec, last interval
+        self.mic_fps: float = 0.0             # mic frames/sec, last interval
+        self._last_metrics_tick: int = _now_ms()
+
+    def touch(self) -> None:
+        """Mark the device as alive — call on every received frame."""
+        self.last_seen_at = _now_ms()
+
+    def is_stale(self) -> bool:
+        return (_now_ms() - self.last_seen_at) > STALE_AFTER_S * 1000
+
+    def should_drop(self) -> bool:
+        return (_now_ms() - self.last_seen_at) > DROP_AFTER_S * 1000
+
+    def note_speaker_frame(self) -> None:
+        self._spk_frames_acc += 1
+
+    def note_mic_frame(self) -> None:
+        self._mic_frames_acc += 1
+
+    def tick_metrics(self) -> None:
+        """Convert raw counters → per-second rates. Called on heartbeat tick."""
+        now = _now_ms()
+        dt_ms = max(1, now - self._last_metrics_tick)
+        self.spk_fps = self._spk_frames_acc * 1000.0 / dt_ms
+        self.mic_fps = self._mic_frames_acc * 1000.0 / dt_ms
+        self._spk_frames_acc = 0
+        self._mic_frames_acc = 0
+        self._last_metrics_tick = now
 
     def apply_call_event(self, payload: dict) -> None:
         self.call_state     = payload.get("state", "IDLE")
@@ -263,6 +320,15 @@ class Device:
         self.active_number  = payload.get("number", "")
         self.call_started_at = int(payload.get("started_at", 0) or 0)
         self.call_muted     = bool(payload.get("muted", False))
+        # New per-SIM/network fields from TelephonyHelper. Optional in payload
+        # — defaults preserve last known value so we don't blank the UI on
+        # a partial event.
+        if "sim_slot" in payload:
+            self.sim_slot = int(payload.get("sim_slot", -1))
+        if "voice_network_name" in payload:
+            self.voice_network_name = str(payload.get("voice_network_name", ""))
+        if "data_concurrent_with_voice" in payload:
+            self.data_concurrent_with_voice = bool(payload["data_concurrent_with_voice"])
         if self.call_state == "IDLE":
             self.call_direction = "unknown"
             self.active_number = ""
@@ -282,6 +348,31 @@ class Device:
     async def send_control(self, command: str, **kw) -> None:
         payload = {"command": command, **kw}
         await self.send_frame(T_CONTROL, json.dumps(payload).encode())
+
+    async def send_ping(self) -> None:
+        """Server → daemon RTT probe. Daemon (post-update) echoes payload back."""
+        self._ping_seq = (self._ping_seq + 1) & 0xFFFFFFFF
+        seq = self._ping_seq
+        self._ping_inflight[seq] = _now_ms()
+        # Cap in-flight to avoid unbounded growth on a stuck peer.
+        if len(self._ping_inflight) > 8:
+            # Drop the oldest
+            old_seq = min(self._ping_inflight)
+            self._ping_inflight.pop(old_seq, None)
+        await self.send_frame(T_PING, struct.pack(">I", seq))
+
+    def note_pong(self, payload: bytes) -> None:
+        """Match against an outstanding ping seq, compute RTT."""
+        if len(payload) != 4:
+            # Empty pong (legacy daemon, or a daemon-originated keepalive
+            # response): just refresh the last_seen pulse.
+            self.touch()
+            return
+        seq = struct.unpack(">I", payload)[0]
+        sent = self._ping_inflight.pop(seq, None)
+        if sent is not None:
+            self.last_rtt_ms = max(0, _now_ms() - sent)
+        self.touch()
 
 
 class DeviceManager:
@@ -323,6 +414,7 @@ class DeviceManager:
                 self.ui_clients.discard(ws)
 
     def _state(self) -> dict:
+        now = _now_ms()
         return {
             "type": "state_update",
             "devices": [
@@ -337,6 +429,17 @@ class DeviceManager:
                         "number": d.active_number,
                         "started_at": d.call_started_at,
                         "muted": d.call_muted,
+                        "sim_slot": d.sim_slot,
+                        "voice_network_name": d.voice_network_name,
+                        "data_concurrent_with_voice": d.data_concurrent_with_voice,
+                    },
+                    "health": {
+                        "connected_at": d.connected_at,
+                        "last_seen_ms_ago": max(0, now - d.last_seen_at),
+                        "rtt_ms": d.last_rtt_ms,
+                        "stale": d.is_stale(),
+                        "spk_fps": round(d.spk_fps, 1),
+                        "mic_fps": round(d.mic_fps, 1),
                     },
                 }
                 for d in self.devices.values()
@@ -375,6 +478,7 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     log.info("TCP connect from %s", addr)
     device: Optional[Device] = None
     uplink_task: Optional[asyncio.Task] = None
+    hb_task: Optional[asyncio.Task] = None
 
     try:
         info = await do_handshake(reader)
@@ -394,11 +498,46 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 if pkt is None:
                     break
                 await device.send_frame(T_VIRTUAL_MIC, pkt)
+                device.note_mic_frame()
         uplink_task = asyncio.create_task(pump_mic_to_phone())
+
+        # Per-device heartbeat. Sends T_PING (4-byte seq) every
+        # HEARTBEAT_INTERVAL_S, computes RTT on the matching T_PONG, ticks
+        # frame-rate metrics, drops the connection if no traffic for
+        # DROP_AFTER_S. Also broadcasts a state_update each tick so the
+        # dashboard's last-seen pulse and RTT chip stay live without
+        # waiting on a call event.
+        async def heartbeat():
+            while device.connected:
+                try:
+                    await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+                except asyncio.CancelledError:
+                    break
+                if not device.connected:
+                    break
+                if device.should_drop():
+                    log.warning("device %s silent for >%ds — dropping",
+                                device.id, DROP_AFTER_S)
+                    device.connected = False
+                    try:
+                        writer.close()
+                    except Exception:
+                        pass
+                    break
+                device.tick_metrics()
+                try:
+                    await device.send_ping()
+                except Exception as e:
+                    log.debug("ping %s: %s", device.id, e)
+                # Push refreshed health to all UI clients.
+                await mgr.broadcast_state()
+        hb_task = asyncio.create_task(heartbeat())
 
         while device.connected:
             t, data = await read_frame(reader)
+            device.touch()
             if t == T_SPEAKER:
+                device.note_speaker_frame()
                 await device.audio.on_speaker_opus(data)
             elif t == T_CALL_STATUS:
                 try:
@@ -436,8 +575,14 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception as e:
                     log.debug("sms parse: %s", e)
             elif t == T_PING:
-                await device.send_frame(T_PONG, b"")
-            # T_PONG: silently accepted
+                # Daemon-originated keepalive: echo the payload (typically
+                # empty) back so the daemon's watchdog stays satisfied.
+                await device.send_frame(T_PONG, data)
+            elif t == T_PONG:
+                # Reply to our own T_PING — measures RTT and refreshes
+                # last_seen. Also called for daemon-originated pongs that
+                # carry no seq, in which case note_pong only touches.
+                device.note_pong(data)
     except asyncio.TimeoutError:
         log.info("handshake timeout from %s", addr)
     except asyncio.IncompleteReadError:
@@ -455,6 +600,11 @@ async def handle_device(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             mgr.remove(device)
         if uplink_task:
             uplink_task.cancel()
+        if hb_task:
+            try:
+                hb_task.cancel()
+            except Exception:
+                pass
         try:
             writer.close()
         except Exception:

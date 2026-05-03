@@ -355,6 +355,16 @@ EOF
         || echo -e "${RED}keytool failed — ensure Java JDK is installed${NC}"
     fi
 
+    # APK version derived from build time. versionName is human-readable
+    # ("YYYY.MM.DD-HHMM" UTC). versionCode must be a monotonic int32 ≤
+    # 2_100_000_000; minutes-since-2020-01-01 (UTC) gives ~3M today and
+    # never collides unless we build twice within the same minute. Honors
+    # an env override (AUDIO_BRIDGE_VERSION_NAME / _CODE) for reproducible
+    # CI builds when needed.
+    local APK_VERSION_NAME="${AUDIO_BRIDGE_VERSION_NAME:-$(date -u +"%Y.%m.%d-%H%M")}"
+    local APK_VERSION_CODE="${AUDIO_BRIDGE_VERSION_CODE:-$(( ( $(date -u +%s) - 1577836800 ) / 60 ))}"
+    echo -e "${YELLOW}APK version: ${APK_VERSION_NAME} (code ${APK_VERSION_CODE})${NC}"
+
     cat > app/build.gradle << EOF
 buildscript {
     repositories { google(); mavenCentral() }
@@ -374,8 +384,8 @@ android {
         applicationId "com.audiobridge"
         minSdk 28
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode ${APK_VERSION_CODE}
+        versionName "${APK_VERSION_NAME}"
     }
 
     signingConfigs {

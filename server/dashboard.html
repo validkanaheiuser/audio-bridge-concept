@@ -104,10 +104,46 @@
     position: relative; transition: all 0.15s; }
   .device:hover { background: var(--chip-hover); border-color: var(--border-strong); }
   .device.selected { border-color: var(--text); background: var(--chip-hover); }
-  .device-name { font-weight: 600; font-size: 0.92rem; }
+  .device.stale    { opacity: 0.55; }
+  .device.stale::after { content: ''; position: absolute; inset: 0;
+    background: repeating-linear-gradient(45deg,
+      transparent 0 6px, rgba(245,158,11,0.04) 6px 12px); border-radius: inherit;
+    pointer-events: none; }
+  .device-head { display: flex; align-items: center; gap: 0.55rem; }
+  .device-name { font-weight: 600; font-size: 0.92rem; flex: 1; min-width: 0;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* heartbeat pulse — opacity reflects freshness; color reflects RTT bucket */
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--good);
+    box-shadow: 0 0 8px currentColor; flex-shrink: 0;
+    animation: heartbeat 1.2s ease-in-out infinite; }
+  .pulse.warn   { color: var(--warn);   background: currentColor; }
+  .pulse.bad    { color: var(--danger); background: currentColor;
+                  animation-duration: 0.6s; }
+  .pulse.stale  { color: var(--muted);  background: currentColor;
+                  animation: none; opacity: 0.4; }
+  @keyframes heartbeat {
+    0%, 100% { transform: scale(1);    opacity: 1; }
+    50%      { transform: scale(1.35); opacity: 0.7; }
+  }
   .device-meta { font-size: 0.72rem; color: var(--muted); margin-top: 0.25rem;
                  font-family: 'JetBrains Mono', monospace; }
   .device-state { font-size: 0.75rem; margin-top: 0.35rem; color: var(--dim); }
+  /* compact info chips on each device card */
+  .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; }
+  .chip { font-size: 0.66rem; padding: 0.18rem 0.5rem; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--dim); background: var(--input-bg);
+    font-family: 'JetBrains Mono', monospace; letter-spacing: 0.02em;
+    text-transform: lowercase; line-height: 1.4; }
+  .chip.net    { color: var(--text); }
+  .chip.net.g3 { color: var(--warn); border-color: rgba(245,158,11,0.35); }
+  .chip.net.g4, .chip.net.g5 { color: var(--good); border-color: rgba(74,222,128,0.35); }
+  .chip.warn   { color: var(--warn); border-color: rgba(245,158,11,0.4); }
+  .chip.danger { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+  .chip.rtt.bad  { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+  .chip.rtt.warn { color: var(--warn);   border-color: rgba(245,158,11,0.4); }
+  /* tiny canvas sparkline of speaker frames/sec */
+  .spark { display: block; width: 100%; height: 18px; margin-top: 0.55rem;
+           border-radius: 4px; background: var(--input-bg); }
   .device-badge { position: absolute; top: 0.7rem; right: 0.9rem;
     font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 999px;
     font-weight: 600; text-transform: lowercase; }
@@ -399,6 +435,58 @@ function badge(call) {
   return `<div class="device-badge ${cls}">${call.state.toLowerCase()}</div>`;
 }
 
+/* Per-device rolling buffer of speaker frames/sec for the sparkline.
+   Capped at SPARK_LEN points, oldest dropped first. Survives re-renders. */
+const SPARK_LEN = 30;
+const sparkHistory = {};   // { [deviceId]: number[] }
+function pushSpark(id, v) {
+  if (!sparkHistory[id]) sparkHistory[id] = [];
+  const a = sparkHistory[id];
+  a.push(v);
+  if (a.length > SPARK_LEN) a.shift();
+  return a;
+}
+function drawSpark(canvas, points) {
+  if (!canvas || !canvas.getContext) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!points.length) return;
+  // Y-scale: max(50fps, observed peak). Speaker is typically 50fps (20ms frames).
+  const peak = Math.max(50, ...points);
+  const stepX = w / Math.max(1, SPARK_LEN - 1);
+  const baseColor = getComputedStyle(document.documentElement)
+    .getPropertyValue('--good').trim() || '#4ade80';
+  ctx.strokeStyle = baseColor;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    const x = i * stepX;
+    const y = h - (points[i] / peak) * (h - 2) - 1;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+/* RTT bucket → CSS class. ≤80 ms green, ≤200 ms warn, >200 ms bad. */
+function rttClass(rtt) {
+  if (rtt == null) return '';
+  if (rtt > 200) return 'bad';
+  if (rtt > 80)  return 'warn';
+  return '';
+}
+/* Last-seen freshness → pulse class. Same buckets as health.stale on server. */
+function pulseClass(h) {
+  if (!h) return 'stale';
+  if (h.stale) return 'stale';
+  const ago = h.last_seen_ms_ago || 0;
+  if (ago > 8000)  return 'warn';   // approaching the 10s heartbeat interval
+  return '';                         // green
+}
+
 function renderDevices(devices) {
   devicesById = {};
   devices.forEach(d => devicesById[d.id] = d);
@@ -407,25 +495,77 @@ function renderDevices(devices) {
   if (!devices || devices.length === 0) {
     container.innerHTML = '<div class="empty">no devices connected · configure the daemon on your phone</div>';
     selectedDevice = null;
+    // Reset spark history for vanished devices
+    for (const k of Object.keys(sparkHistory)) delete sparkHistory[k];
     refreshCallUI();
     return;
   }
   let foundSelected = false;
   container.innerHTML = '';
+  const sparkCanvases = [];   // (canvas, points) pairs to paint after attach
   for (const d of devices) {
     if (selectedDevice === d.id) foundSelected = true;
     const call = d.call || {};
+    const h = d.health || {};
+    const points = pushSpark(d.id, h.spk_fps || 0);
+
     const item = document.createElement('div');
-    item.className = 'device' + (selectedDevice === d.id ? ' selected' : '');
+    const stale = !!h.stale;
+    item.className = 'device'
+      + (selectedDevice === d.id ? ' selected' : '')
+      + (stale ? ' stale' : '');
+
+    // Build chip row from health + call.
+    const chips = [];
+    if (h.rtt_ms != null) {
+      chips.push(`<span class="chip rtt ${rttClass(h.rtt_ms)}">rtt ${h.rtt_ms}ms</span>`);
+    } else if (!stale) {
+      chips.push(`<span class="chip">rtt …</span>`);
+    }
+    if (call.voice_network_name) {
+      const cls = call.voice_network_name === '3G' ? 'g3'
+                : call.voice_network_name === '4G' ? 'g4'
+                : call.voice_network_name === '5G' ? 'g5' : '';
+      chips.push(`<span class="chip net ${cls}">${call.voice_network_name.toLowerCase()}</span>`);
+    }
+    if (typeof call.sim_slot === 'number' && call.sim_slot >= 0) {
+      chips.push(`<span class="chip">sim ${call.sim_slot + 1}</span>`);
+    }
+    if ((h.spk_fps || 0) > 0.5) {
+      chips.push(`<span class="chip">${Math.round(h.spk_fps)} fps rx</span>`);
+    }
+    // Active 3G call without concurrent data — operator must use Wi-Fi.
+    if (call.state === 'ACTIVE' && call.data_concurrent_with_voice === false) {
+      chips.push(`<span class="chip warn">cellular call · data suspended</span>`);
+    }
+    if (stale) {
+      const ago = Math.floor((h.last_seen_ms_ago || 0) / 1000);
+      chips.push(`<span class="chip danger">no traffic · ${ago}s</span>`);
+    }
+
     item.innerHTML =
-      `<div class="device-name">${d.name || d.id}</div>` +
-      `<div class="device-meta">${d.id}${d.android ? ' · android ' + d.android : ''}</div>` +
+      `<div class="device-head">` +
+        `<span class="pulse ${pulseClass(h)}"></span>` +
+        `<div class="device-name">${d.name || d.id}</div>` +
+      `</div>` +
+      `<div class="device-meta">${d.id}${d.android ? ' · android ' + d.android : ''}` +
+        `${d.brand ? ' · ' + d.brand : ''}</div>` +
       `<div class="device-state">${(call.state || 'idle').toLowerCase()}` +
         `${call.number ? ' · ' + call.number : ''}</div>` +
+      (chips.length ? `<div class="chips">${chips.join('')}</div>` : '') +
+      `<canvas class="spark" data-spark-id="${d.id}"></canvas>` +
       badge(call);
     item.onclick = () => { selectedDevice = d.id; renderDevices(devices); };
     container.appendChild(item);
+    sparkCanvases.push([item.querySelector('canvas'), points]);
   }
+  // Drop history for devices that are no longer present.
+  const live = new Set(devices.map(d => d.id));
+  for (const k of Object.keys(sparkHistory)) if (!live.has(k)) delete sparkHistory[k];
+
+  // Paint after attach so clientWidth is real.
+  for (const [c, pts] of sparkCanvases) drawSpark(c, pts);
+
   if (!foundSelected) selectedDevice = devices[0].id;
   refreshCallUI();
 }

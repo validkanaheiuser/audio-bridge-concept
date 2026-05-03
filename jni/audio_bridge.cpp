@@ -935,6 +935,16 @@ static void receive_virtual_mic_thread(mbedtls_net_context* net) {
         // server replies with T_PONG (empty). Nothing to do.
         if(type == T_PONG) continue;
 
+        // The server may also originate T_PING (server-side RTT probe),
+        // carrying an opaque payload (typically a sequence number). Echo
+        // the payload back unchanged in T_PONG so the server can match
+        // its outstanding probes and compute RTT. Empty payloads are
+        // legal and produce empty pongs.
+        if(type == T_PING) {
+            send_frame(net, T_PONG, len > 0 ? pkt.data() : nullptr, len);
+            continue;
+        }
+
         // Handle Control Messages
         if(type == T_CONTROL) {
             pkt.data()[len] = '\0';
