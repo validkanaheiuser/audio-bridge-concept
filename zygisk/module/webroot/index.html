@@ -1,65 +1,248 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Bridge Settings</title>
-    <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>audio bridge</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root[data-theme='dark'] {
+    --bg: #050505; --card: #0d0d0d; --card-hover: #111;
+    --border: rgba(255,255,255,0.06); --border-strong: rgba(255,255,255,0.12);
+    --text: #f5f5f5; --dim: #a0a0a0; --muted: #606060;
+    --accent: #f5f5f5; --accent-text: #000;
+    --chip: #141414; --chip-hover: #1a1a1a; --input-bg: #0f0f0f;
+    --danger: #ef4444; --good: #4ade80; --warn: #f59e0b;
+    --scrim: rgba(0,0,0,0.7);
+  }
+  :root[data-theme='light'] {
+    --bg: #f7f7f7; --card: #ffffff; --card-hover: #fafafa;
+    --border: rgba(0,0,0,0.08); --border-strong: rgba(0,0,0,0.16);
+    --text: #0a0a0a; --dim: #525252; --muted: #8a8a8a;
+    --accent: #0a0a0a; --accent-text: #fff;
+    --chip: #f0f0f0; --chip-hover: #e8e8e8; --input-bg: #f4f4f4;
+    --danger: #dc2626; --good: #16a34a; --warn: #d97706;
+    --scrim: rgba(255,255,255,0.6);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); }
+  body { font-family: 'Inter', system-ui, sans-serif; min-height: 100vh;
+         padding: 3rem 2rem 4rem; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* header */
+  .top { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 2.5rem; }
+  .top-icon { width: 56px; height: 56px; border-radius: 14px;
+    background: var(--chip) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z'/><path d='M19 10v2a7 7 0 0 1-14 0v-2'/><line x1='12' y1='19' x2='12' y2='22'/></svg>") center/60% no-repeat; flex-shrink: 0; }
+  .top-text h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em;
+                 line-height: 1.1; text-transform: lowercase; }
+  .top-text p { font-size: 0.95rem; color: var(--muted); margin-top: 0.35rem; }
+  .top-right { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; }
+  .connection { font-size: 0.75rem; color: var(--muted);
+    padding: 0.35rem 0.75rem; border: 1px solid var(--border); border-radius: 999px;
+    display: flex; align-items: center; gap: 0.5rem; }
+  .connection .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .connection.online .dot { background: var(--good); box-shadow: 0 0 6px var(--good); }
+  .connection.offline .dot { background: var(--danger); }
+  .theme-toggle { width: 42px; height: 42px; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--border); cursor: pointer;
+    display: grid; place-items: center; color: var(--text); }
+  .theme-toggle:hover { background: var(--chip); border-color: var(--border-strong); }
+  .theme-toggle svg { width: 18px; height: 18px; }
+
+  /* grid */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 16px; padding: 1.5rem; transition: border-color 0.15s; }
+  .card:hover { border-color: var(--border-strong); }
+  .card.full { grid-column: 1 / -1; }
+
+  .label { font-size: 0.7rem; font-weight: 600; color: var(--muted);
+           text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 1rem; }
+
+  /* daemon card */
+  .daemon-row { display: flex; align-items: center; justify-content: space-between;
+                padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+  .daemon-row:last-child { border-bottom: none; }
+  .daemon-row .k { font-size: 0.78rem; color: var(--muted); text-transform: lowercase; }
+  .daemon-row .v { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--text); }
+
+  /* status badge — preserves classnames .badge.running/.badge.stopped/.badge.unknown */
+  .badge { font-size: 0.72rem; padding: 0.25rem 0.65rem; border-radius: 999px;
+           font-weight: 600; text-transform: lowercase; letter-spacing: 0.02em;
+           border: 1px solid var(--border); background: var(--chip); color: var(--dim); }
+  .badge.running { background: rgba(74,222,128,0.12); color: var(--good);
+                   border-color: rgba(74,222,128,0.4); }
+  .badge.stopped { background: rgba(239,68,68,0.12); color: var(--danger);
+                   border-color: rgba(239,68,68,0.4); }
+  .badge.unknown { background: rgba(245,158,11,0.12); color: var(--warn);
+                   border-color: rgba(245,158,11,0.4); }
+
+  /* form */
+  .field { margin-bottom: 0.75rem; }
+  .field label { display: block; font-size: 0.72rem; color: var(--muted);
+                 text-transform: lowercase; margin-bottom: 0.4rem; }
+  input[type=text], input[type=number], input[type=password] {
+    width: 100%; background: var(--input-bg); border: 1px solid transparent;
+    border-radius: 10px; padding: 0.75rem 0.9rem; color: var(--text);
+    font-family: inherit; font-size: 0.9rem; outline: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  input::placeholder { color: var(--muted); }
+  input:focus { border-color: var(--border-strong); background: var(--chip); }
+
+  /* buttons */
+  .btn-row { display: flex; gap: 0.5rem; margin-top: 0.9rem; flex-wrap: wrap; }
+  button { flex: 1; min-width: 0; padding: 0.72rem 1rem;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--chip); color: var(--text);
+    font-family: inherit; font-weight: 500; font-size: 0.86rem;
+    cursor: pointer; transition: all 0.15s;
+    text-transform: lowercase; letter-spacing: 0.01em; }
+  button:hover:not(:disabled) { background: var(--chip-hover); border-color: var(--border-strong); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: var(--accent-text);
+                 border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover:not(:disabled) { filter: brightness(0.92); }
+  .btn-icon { flex: 0 0 auto; width: 38px; padding: 0; display: grid; place-items: center;
+              font-size: 0.95rem; }
+
+  /* test-result inline strip — preserves .test-result.success/.test-result.error/.test-result.hidden */
+  .test-result { margin-top: 0.9rem; padding: 0.75rem 0.9rem; border-radius: 10px;
+                 font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;
+                 line-height: 1.55; white-space: pre-wrap; }
+  .test-result.success { background: rgba(74,222,128,0.08); color: var(--good);
+                         border: 1px solid rgba(74,222,128,0.3); }
+  .test-result.error   { background: rgba(239,68,68,0.08); color: var(--danger);
+                         border: 1px solid rgba(239,68,68,0.3); }
+  .test-result.hidden  { display: none; }
+
+  /* terminal / logs — preserves .terminal class consumed by app.js scroll */
+  .debug-header { display: flex; justify-content: space-between; align-items: center;
+                  margin-bottom: 1rem; }
+  .debug-header .label { margin-bottom: 0; }
+  .terminal { background: var(--input-bg); border: 1px solid var(--border);
+              border-radius: 12px; padding: 0.9rem 1rem;
+              font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;
+              max-height: 320px; overflow-y: auto; color: var(--dim); line-height: 1.7; }
+  .terminal pre { white-space: pre-wrap; word-break: break-word; font: inherit; color: inherit; }
+
+  @media (max-width: 820px) {
+    body { padding: 1.5rem 1rem 3rem; }
+    .grid { grid-template-columns: 1fr; }
+    .top-text h1 { font-size: 1.5rem; }
+  }
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <div class="mic-icon">🎤</div>
-            </div>
-            <h1>Audio Bridge</h1>
-            <p>KernelSU Module Configuration</p>
-        </header>
-
-        <section class="card status-card">
-            <div class="status-header">
-                <h2>Daemon Status</h2>
-                <div id="daemon-badge" class="badge unknown">Checking...</div>
-            </div>
-            <div class="status-details">
-                <p>PID: <span id="daemon-pid">--</span></p>
-            </div>
-        </section>
-
-        <section class="card config-card">
-            <h2>Server Connection</h2>
-            <div class="input-group">
-                <label for="host">IP Address / Host</label>
-                <input type="text" id="host" placeholder="192.168.2.153">
-            </div>
-            <div class="input-group">
-                <label for="port">Port</label>
-                <input type="number" id="port" placeholder="59100">
-            </div>
-            <div class="input-group">
-                <label for="token">Security Token</label>
-                <input type="password" id="token" placeholder="default_secure_token_123">
-            </div>
-            
-            <div class="actions">
-                <button id="btn-test" class="btn secondary">Test Connection</button>
-                <button id="btn-save" class="btn primary">Save & Restart</button>
-            </div>
-            <div id="test-result" class="test-result hidden"></div>
-        </section>
-
-        <section class="card debug-card">
-            <div class="debug-header">
-                <h2>Live Logs</h2>
-                <button id="btn-refresh-logs" class="btn-icon">🔄</button>
-            </div>
-            <div class="terminal">
-                <pre id="log-output">Loading logs...</pre>
-            </div>
-        </section>
+<div class="wrap">
+  <div class="top">
+    <div class="top-icon"></div>
+    <div class="top-text">
+      <h1>audio bridge</h1>
+      <p>kernelsu module configuration</p>
     </div>
-    
-    <script src="app.js"></script>
+    <div class="top-right">
+      <div class="connection offline" id="conn"><span class="dot"></span><span id="conn-text">offline</span></div>
+      <button class="theme-toggle" id="theme-toggle" type="button">
+        <svg id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">daemon</div>
+      <div class="daemon-row">
+        <span class="k">status</span>
+        <span id="daemon-badge" class="badge unknown">checking…</span>
+      </div>
+      <div class="daemon-row">
+        <span class="k">pid</span>
+        <span id="daemon-pid" class="v">--</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">server connection</div>
+      <div class="field">
+        <label for="host">ip address / host</label>
+        <input type="text" id="host" placeholder="192.168.2.153">
+      </div>
+      <div class="field">
+        <label for="port">port</label>
+        <input type="number" id="port" placeholder="59100">
+      </div>
+      <div class="field">
+        <label for="token">security token</label>
+        <input type="password" id="token" placeholder="default_secure_token_123">
+      </div>
+      <div class="btn-row">
+        <button id="btn-test" type="button">test connection</button>
+        <button id="btn-save" class="btn-primary" type="button">save &amp; restart</button>
+      </div>
+      <div id="test-result" class="test-result hidden"></div>
+    </div>
+
+    <div class="card full">
+      <div class="debug-header">
+        <div class="label">live logs</div>
+        <button id="btn-refresh-logs" class="btn-icon" type="button" aria-label="refresh logs">↻</button>
+      </div>
+      <div class="terminal">
+        <pre id="log-output">loading logs…</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* theme toggle — same shape as the server dashboard so the icon paint
+   logic is identical. Persisted to localStorage under 'ab-theme'. */
+(function () {
+  var doc = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var icon = document.getElementById('icon-moon');
+  doc.setAttribute('data-theme', localStorage.getItem('ab-theme') || 'dark');
+  function paint() {
+    var t = doc.getAttribute('data-theme');
+    icon.innerHTML = t === 'dark'
+      ? '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'
+      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>';
+  }
+  paint();
+  btn.onclick = function () {
+    var t = doc.getAttribute('data-theme');
+    var n = t === 'dark' ? 'light' : 'dark';
+    doc.setAttribute('data-theme', n);
+    localStorage.setItem('ab-theme', n);
+    paint();
+  };
+})();
+
+/* connection pill — mirrors daemon-badge so the header reflects the same
+   state without changing app.js. Pure observer; no extra polling. */
+(function () {
+  var conn = document.getElementById('conn');
+  var connText = document.getElementById('conn-text');
+  var badge = document.getElementById('daemon-badge');
+  if (!badge) return;
+  var sync = function () {
+    var running = badge.classList.contains('running');
+    var stopped = badge.classList.contains('stopped');
+    conn.className = 'connection ' + (running ? 'online' : (stopped ? 'offline' : ''));
+    connText.textContent = running ? 'online' : (stopped ? 'offline' : 'checking');
+  };
+  new MutationObserver(sync).observe(badge, { attributes: true, childList: true, subtree: true });
+  sync();
+})();
+</script>
+<script src="app.js"></script>
 </body>
 </html>

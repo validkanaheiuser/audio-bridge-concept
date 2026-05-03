@@ -36,27 +36,102 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
     console.log('[DEBUG] Default config loaded:', { ...config, TOKEN: '***HIDDEN***' });
 
-    // Helper: Run shell command via KernelSU
-    async function runCmd(cmd) {
-        console.log(`[DEBUG] Executing command: ${cmd}`);
-
-        if (typeof ksu === 'undefined') {
-            console.error('[ERROR] KernelSU API not available - Not running inside KernelSU WebUI');
-            return { errno: 1, stdout: "Error: Not running inside KernelSU WebUI", stderr: "" };
-        }
-
-        try {
-            const result = await ksu.exec(cmd);
-            console.log(`[DEBUG] Command result - errno: ${result.errno}, stdout length: ${result.stdout?.length || 0}, stderr length: ${result.stderr?.length || 0}`);
-            if (result.errno !== 0) {
-                console.warn(`[WARN] Command failed with errno ${result.errno}: ${cmd}`);
-                if (result.stderr) console.warn(`[WARN] stderr: ${result.stderr}`);
+    // Helper: Run shell command via the KernelSU/APatch WebUI bridge.
+    //
+    // The bridge has three overloads:
+    //   1. ksu.exec(cmd)                     — sync, returns stdout (string).
+    //                                          No errno, no stderr.
+    //   2. ksu.exec(cmd, opts)               — same shape.
+    //   3. ksu.exec(cmd, opts, callbackName) — async; the host later invokes
+    //                                          window[callbackName](errno,
+    //                                          stdout, stderr) as three
+    //                                          separate args (NOT an object).
+    //
+    // The previous version did `await ksu.exec(cmd)` and read `result.errno`.
+    // That awaited a plain string and `errno` was always undefined, which
+    // poisoned every `if (res.errno === 0)` check — so the daemon badge,
+    // PID, log fetch and config load all silently failed.
+    //
+    // We try the 3-arg callback form first (modern KernelSU/APatch) and
+    // fall back to the 1-arg sync form, which is enough for read-only
+    // commands like `cat`, `pidof`, `tail`. Backgrounded commands (`&`)
+    // require the callback form to return promptly.
+    function runCmd(cmd) {
+        return new Promise(function (resolve) {
+            if (typeof ksu === 'undefined' || !ksu || typeof ksu.exec !== 'function') {
+                console.error('[ERROR] ksu.exec unavailable — not running in WebUI?');
+                resolve({ errno: 1, stdout: '', stderr: 'ksu.exec unavailable' });
+                return;
             }
-            return result;
-        } catch (error) {
-            console.error(`[ERROR] Exception executing command: ${cmd}`, error);
-            return { errno: 1, stdout: "", stderr: error.message };
-        }
+            console.log('[DEBUG] runCmd: ' + cmd);
+
+            // Generate a unique global callback name. The bridge looks it up
+            // on `window`, so it must be a real property — not a closure.
+            var cbName = '__ksu_cb_' + Date.now() + '_'
+                       + Math.floor(Math.random() * 1e9);
+            var settled = false;
+            var safetyTimer = null;
+
+            window[cbName] = function (errno, stdout, stderr) {
+                if (settled) return;
+                settled = true;
+                if (safetyTimer) { clearTimeout(safetyTimer); safetyTimer = null; }
+                try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+                var n = (typeof errno === 'number')
+                          ? errno
+                          : parseInt(errno, 10);
+                if (isNaN(n)) n = 0;
+                resolve({
+                    errno: n,
+                    stdout: stdout == null ? '' : String(stdout),
+                    stderr: stderr == null ? '' : String(stderr)
+                });
+            };
+
+            // Try the 3-arg callback form. If the bridge throws (older
+            // overload only), or returns synchronously without ever
+            // invoking the callback, fall through to the 1-arg form.
+            var threeArgRet;
+            try {
+                threeArgRet = ksu.exec(cmd, '{}', cbName);
+            } catch (e) {
+                // 3-arg overload absent. Drop the dangling callback and
+                // try the 1-arg form below.
+                try { delete window[cbName]; } catch (e2) { window[cbName] = undefined; }
+                settled = true;
+                try {
+                    var out1 = ksu.exec(cmd);
+                    resolve({ errno: 0, stdout: out1 == null ? '' : String(out1), stderr: '' });
+                } catch (e3) {
+                    console.error('[ERROR] ksu.exec threw: ' + (e3 && e3.message));
+                    resolve({ errno: 1, stdout: '', stderr: String(e3 && e3.message || e3) });
+                }
+                return;
+            }
+
+            // Some hosts implement the 3-arg form but immediately return the
+            // stdout as a string (e.g. older Magisk WebUI shims). If we got
+            // a string back, treat that as the answer and don't wait for a
+            // callback that may never come.
+            if (typeof threeArgRet === 'string' && threeArgRet.length > 0) {
+                if (!settled) {
+                    settled = true;
+                    try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+                    resolve({ errno: 0, stdout: threeArgRet, stderr: '' });
+                }
+                return;
+            }
+
+            // Safety net: if no callback fires within 8 s, give up so the
+            // page doesn't hang forever on a misbehaving bridge.
+            safetyTimer = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+                console.warn('[WARN] runCmd timed out after 8s: ' + cmd);
+                resolve({ errno: 124, stdout: '', stderr: 'timeout' });
+            }, 8000);
+        });
     }
 
     // Load Configuration
@@ -153,9 +228,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnTest.textContent = 'Testing...';
         showResult('hidden', '');
 
-        // Run the daemon with --check-server flag
-        const cmd = `/system/bin/audio-bridge --host "${host}" --port ${port} --token "${token}" --check-server`;
-        console.log(`[DEBUG] Executing test command: ${cmd.replace(token, '***HIDDEN***')}`);
+        // Run the daemon with --check-server flag. The user inputs become
+        // shell args; quote-escape with single-quote-safe replacement so a
+        // token like `it's%complicated` can't break the command line.
+        const sq = (s) => `'` + String(s).replace(/'/g, `'\\''`) + `'`;
+        const cmd = `/system/bin/audio-bridge --host ${sq(host)} --port ${sq(port)} --token ${sq(token)} --check-server`;
+        console.log('[DEBUG] Executing test command (token masked):',
+            cmd.replace(sq(token), `'***HIDDEN***'`));
 
         const res = await runCmd(cmd);
         console.log(`[DEBUG] Test command result - errno: ${res.errno}`);
@@ -191,12 +270,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnSave.disabled = true;
         btnSave.textContent = 'Saving...';
 
-        // Write config
+        // Write config. Round-trip through base64 so no character in the
+        // host/port/token can break the shell command — `printf` (the
+        // previous approach) interpreted `%` as a format directive and
+        // couldn't survive a single quote in the token.
         const confContent = `HOST=${host}\nPORT=${port}\nTOKEN=${token}\n`;
-        console.log('[DEBUG] Writing config file with content:\n', confContent.replace(token, '***HIDDEN***'));
+        console.log('[DEBUG] Writing config file with content:\n',
+            confContent.replace(token, '***HIDDEN***'));
 
-        // Use printf to handle newlines correctly in shell
-        const writeResult = await runCmd(`printf '${confContent}' > /data/local/tmp/audio_bridge.conf`);
+        const b64 = btoa(unescape(encodeURIComponent(confContent)));
+        const writeCmd = `echo '${b64}' | base64 -d > /data/local/tmp/audio_bridge.conf`;
+        const writeResult = await runCmd(writeCmd);
         if (writeResult.errno !== 0) {
             console.error('[ERROR] Failed to write config file:', writeResult.stderr);
         } else {
