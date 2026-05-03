@@ -192,6 +192,7 @@ build_apk() {
     cp java/com/audiobridge/IPCClient.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/BootReceiver.java app/src/main/java/com/audiobridge/
     cp java/com/audiobridge/LauncherActivity.java app/src/main/java/com/audiobridge/
+    cp java/com/audiobridge/VoiceCallCapture.java app/src/main/java/com/audiobridge/
     
     # Create AndroidManifest.xml
     cat > app/src/main/AndroidManifest.xml << 'EOF'
@@ -201,6 +202,7 @@ build_apk() {
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
@@ -209,6 +211,13 @@ build_apk() {
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Cellular call audio capture path (VoiceCallCapture). Both are
+         signature-protected; granted via the privapp-permissions XML
+         overlay shipped at /system/etc/permissions/. Declared here so the
+         platform knows the app intends to use them. -->
+    <uses-permission android:name="android.permission.CAPTURE_AUDIO_OUTPUT" />
+    <uses-permission android:name="android.permission.MODIFY_PHONE_STATE" />
 
     <application
         android:label="@string/app_name"
