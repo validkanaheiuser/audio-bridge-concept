@@ -109,21 +109,42 @@ public class IPCClient {
         mOut.println("HELO_JAVA");
         diag("Connected — HELO_JAVA sent");
         setStatus("Daemon connected · telephony ready");
-        
-        String line;
-        while (mRunning && (line = mIn.readLine()) != null) {
-            if (line.trim().isEmpty()) continue;
-            
-            try {
-                JSONObject json = new JSONObject(line);
-                handleCommand(json);
-            } catch (JSONException e) {
-                Log.e(TAG, "Invalid JSON from daemon: " + line);
+
+        try {
+            String line;
+            while (mRunning && (line = mIn.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+
+                try {
+                    JSONObject json = new JSONObject(line);
+                    handleCommand(json);
+                } catch (JSONException e) {
+                    Log.e(TAG, "Invalid JSON from daemon: " + line);
+                }
             }
+        } finally {
+            // Per-connection cleanup ONLY. Must not flip mRunning, otherwise
+            // the outer reconnect loop in startConnectionThread() exits and
+            // never comes back when the daemon restarts. The previous code
+            // called disconnect() here, which set mRunning=false and turned
+            // a dropped socket into a permanent shutdown — symptom: WebUI
+            // "Save & Restart" worked once, but every subsequent restart
+            // left the helper APK orphaned with no IPC.
+            closeSocketQuiet();
         }
-        
-        disconnect();
+        // readLine() returned null = peer closed the socket. Throw so the
+        // outer loop sleeps and retries.
         throw new IOException("Socket closed by remote");
+    }
+
+    /** Close the current socket + streams without touching mRunning. */
+    private void closeSocketQuiet() {
+        try { if (mOut != null)    mOut.close(); }    catch (Exception ignored) {}
+        try { if (mIn != null)     mIn.close(); }     catch (IOException ignored) {}
+        try { if (mSocket != null) mSocket.close(); } catch (IOException ignored) {}
+        mOut = null;
+        mIn = null;
+        mSocket = null;
     }
 
     private void handleCommand(JSONObject json) {
@@ -153,24 +174,31 @@ public class IPCClient {
     }
 
     public void sendEvent(JSONObject json) {
-        mExecutor.execute(() -> {
-            if (mOut != null && mSocket != null && mSocket.isConnected()) {
-                mOut.println(json.toString());
-            } else {
-                Log.w(TAG, "Cannot send event, IPC not connected: " + json.toString());
+        // Snapshot mOut so a concurrent reconnect can't NPE us between the
+        // null-check and the write. PrintWriter.println swallows IOException
+        // and only sets an internal error flag; the read loop will see EOF
+        // and trigger reconnect, so we don't need to reconnect from here.
+        // Note: writes happen on the caller's thread rather than mExecutor,
+        // because mExecutor is occupied by the long-lived read loop and
+        // would queue writes until the next reconnect — which we don't want.
+        PrintWriter out = mOut;
+        if (out == null) {
+            Log.w(TAG, "Cannot send event, IPC not connected: " + json.toString());
+            return;
+        }
+        try {
+            out.println(json.toString());
+            if (out.checkError()) {
+                Log.w(TAG, "PrintWriter error flag set; reconnect will be triggered by read loop");
             }
-        });
+        } catch (Exception e) {
+            Log.w(TAG, "sendEvent failed: " + e.getMessage());
+        }
     }
 
+    /** Explicit shutdown — stops the reconnect loop and closes the socket. */
     public void disconnect() {
         mRunning = false;
-        try {
-            if (mSocket != null) {
-                mSocket.close();
-                mSocket = null;
-            }
-        } catch (IOException e) {
-            // ignore
-        }
+        closeSocketQuiet();
     }
 }
